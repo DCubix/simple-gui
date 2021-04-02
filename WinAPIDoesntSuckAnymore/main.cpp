@@ -60,7 +60,7 @@ int main(int argc, char** argv) {
 	);
 
 	std::unique_ptr<gui::Manager> man = std::make_unique<gui::Manager>();
-	SetWindowLongPtr(hwnd, GWLP_USERDATA, (LONG) man.get());
+	SetWindowLongPtr(hwnd, GWLP_USERDATA, (LONG_PTR) man.get());
 
 	gui::WID btn1, txt1;
 	gui::Container& panel = man->create<gui::Container>(gui::Rect{ 0, 0, 800, 32 });
