@@ -52,7 +52,7 @@ int main(int argc, char** argv) {
 		L"WIN_API_DOESNT_SUCK_ANYMORE",
 		L"Calculator That Doesn't Suck",
 		WS_OVERLAPPEDWINDOW & ~WS_MAXIMIZEBOX & ~WS_THICKFRAME,
-		20, 20, 360, 360,
+		20, 20, 360, 364,
 		nullptr,
 		nullptr,
 		wc.hInstance,
@@ -174,10 +174,12 @@ int main(int argc, char** argv) {
 			};
 		}
 	}
+
+	man->create<gui::Text>(panel.id(), L"Made by Diego");
 	
 	man->createWidgets(hwnd);
 
-	//FreeConsole();
+	FreeConsole();
 	ShowWindow(hwnd, SW_SHOW);
 
 	MSG msg = {};
