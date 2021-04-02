@@ -1080,9 +1080,9 @@ namespace gui {
 	using WidgetMap = std::unordered_map<size_t, std::unique_ptr<Widget>>;
 
 	enum class Alignment {
-		Left = SS_LEFT,
-		Center = SS_CENTER,
-		Right = SS_RIGHT
+		Left = 0,
+		Center,
+		Right
 	};
 
 	class Text : public Widget {
@@ -1104,14 +1104,38 @@ namespace gui {
 		}
 
 		void updateAttributes() {
+			LONG_PTR align = SS_LEFT;
+			switch (alignment) {
+				case Alignment::Left: break;
+				case Alignment::Center: align = SS_CENTER; break;
+				case Alignment::Right: align = SS_RIGHT; break;
+			}
+
 			LONG_PTR style = GetWindowLongPtr(handle, GWL_STYLE);
-			SetWindowLongPtr(handle, GWL_STYLE, style | LONG_PTR(alignment));
+			SetWindowLongPtr(handle, GWL_STYLE, style | align);
 
 			SetWindowText(handle, text.c_str());
+
+			m_font = CreateFont(
+				fontSize, 0, 0, 0, FW_DONTCARE,
+				FALSE, FALSE, FALSE,
+				ANSI_CHARSET,
+				OUT_DEFAULT_PRECIS,
+				CLIP_DEFAULT_PRECIS,
+				DEFAULT_QUALITY,
+				DEFAULT_PITCH | FF_SWISS,
+				fontFamily.c_str()
+			);
+			SendMessage(handle, WM_SETFONT, WPARAM(m_font), TRUE);
 		}
 
 		Alignment alignment{ Alignment::Center };
 		std::wstring text{ L"Text" };
+
+		std::wstring fontFamily{ L"Segoe UI" };
+		int fontSize{ 16 };
+	private:
+		HFONT m_font{ nullptr };
 	};
 
 	class Button : public Widget {
@@ -1133,15 +1157,28 @@ namespace gui {
 		}
 
 		void updateAttributes() {
-			LONG_PTR style = GetWindowLongPtr(handle, GWL_STYLE);
-			SetWindowLongPtr(handle, GWL_STYLE, style | LONG_PTR(alignment));
-
 			SetWindowText(handle, text.c_str());
+
+			m_font = CreateFont(
+				fontSize, 0, 0, 0, FW_DONTCARE,
+				FALSE, FALSE, FALSE,
+				ANSI_CHARSET,
+				OUT_DEFAULT_PRECIS,
+				CLIP_DEFAULT_PRECIS,
+				DEFAULT_QUALITY,
+				DEFAULT_PITCH | FF_SWISS,
+				fontFamily.c_str()
+			);
+			SendMessage(handle, WM_SETFONT, WPARAM(m_font), TRUE);
 		}
 
-		Alignment alignment{ Alignment::Center };
 		std::wstring text{ L"Button" };
 		std::function<void()> onPressed;
+
+		std::wstring fontFamily{ L"Segoe UI" };
+		int fontSize{ 16 };
+	private:
+		HFONT m_font{ nullptr };
 	};
 
 	class TextBox : public Widget {
@@ -1210,21 +1247,55 @@ namespace gui {
 		void updateAttributes() {
 			SetWindowPos(m_wrapper, nullptr, m_actualBounds.x, m_actualBounds.y, m_actualBounds.width, m_actualBounds.height, 0);
 
+			LONG_PTR align = ES_LEFT;
+			switch (alignment) {
+				case Alignment::Left: break;
+				case Alignment::Center: align = ES_CENTER; break;
+				case Alignment::Right: align = ES_RIGHT; break;
+			}
+
 			LONG_PTR style = GetWindowLongPtr(handle, GWL_STYLE);
-			SetWindowLongPtr(handle, GWL_STYLE, style | LONG_PTR(alignment));
+
+			if (multiLine) style |= ES_MULTILINE;
+			if (password) style |= ES_PASSWORD;
+			if (readOnly) {
+				style |= ES_READONLY;
+				SendMessage(handle, EM_SETREADONLY, TRUE, 0);
+			}
+			style |= align;
+
+			SetWindowLongPtr(handle, GWL_STYLE, style);
 			SetWindowText(handle, text.c_str());
+
+			m_font = CreateFont(
+				fontSize, 0, 0, 0, FW_DONTCARE,
+				FALSE, FALSE, FALSE,
+				ANSI_CHARSET,
+				OUT_DEFAULT_PRECIS,
+				CLIP_DEFAULT_PRECIS,
+				DEFAULT_QUALITY,
+				DEFAULT_PITCH | FF_SWISS,
+				fontFamily.c_str()
+			);
+			SendMessage(handle, WM_SETFONT, WPARAM(m_font), TRUE);
 		}
 
-		Alignment alignment{ Alignment::Center };
+		bool multiLine{ false }, password{ false }, readOnly{ false };
+		Alignment alignment{ Alignment::Left };
 		std::wstring text{ L"" };
+		
+		std::wstring fontFamily{ L"Segoe UI" };
+		int fontSize{ 16 };
+
 	private:
+		HFONT m_font{ nullptr };
 		HWND m_wrapper;
 	};
 
 	class Container : public Widget {
 	public:
 		Container() = default;
-		Container(Rect b) {	bounds = b; }
+		Container(Rect b, Flow flow = Flow::Horizontal) { bounds = b; this->flow = flow; }
 
 		void create() {
 			handle = CreateWindow(
@@ -1269,16 +1340,41 @@ namespace gui {
 		std::vector<WID> children{};
 	};
 
+	class Spacer : public Widget {
+	public:
+		void create() {
+			handle = CreateWindow(
+				L"STATIC",
+				nullptr,
+				WS_CHILD,
+				0, 0, 1, 1,
+				parentHandle,
+				(HMENU)m_id,
+				(HINSTANCE)GetWindowLongPtr(parentHandle, GWLP_HINSTANCE),
+				nullptr
+			);
+		}
+	};
+
 	class Manager {
 	public:
 		Manager() = default;
 		~Manager() = default;
 
 		template <class W, typename... Args>
-		W& create(Args&&... args) {
+		W& create(WID parent, Args&&... args) {
 			size_t id = m_genID++;
 			auto widget = std::make_unique<W>(std::forward<Args>(args)...);
 			widget->m_id = id;
+
+			if (parent) {
+				Container* cont = dynamic_cast<Container*>(get(parent));
+				if (cont) {
+					cont->children.push_back(id);
+					widget->parent = parent;
+				}
+			}
+
 			m_widgets[id] = std::move(widget);
 			return *((W*)m_widgets[id].get());
 		}
@@ -1355,10 +1451,16 @@ namespace gui {
 			}
 			const int size = (cont->flow == Flow::Horizontal ? parentBounds.width : parentBounds.height) - cont->border * 2;
 
+			int pbx = parentBounds.x,
+				pby = parentBounds.y;
 			for (auto& e : cont->children) {
 				Widget* c = get(e);
 
 				Rect ret = c->bounds;
+				if (cont->parent) {
+					ret.x -= pbx;
+					ret.y -= pby;
+				}
 				ret.x += parentBounds.x + cont->border;
 				ret.y += parentBounds.y + cont->border;
 

@@ -22,7 +22,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
 			UINT height = HIWORD(lParam);
 			gui::Widget* cont = man->get(1000);
 			cont->bounds.width = width;
-			//cont->bounds.height = height;
+			cont->bounds.height = height;
 			man->updateWidgets();
 
 			InvalidateRect(hwnd, nullptr, true);
@@ -50,9 +50,9 @@ int main(int argc, char** argv) {
 	HWND hwnd = CreateWindowEx(
 		0,
 		L"WIN_API_DOESNT_SUCK_ANYMORE",
-		L"WinAPI Window",
-		WS_OVERLAPPEDWINDOW,
-		20, 20, 800, 600,
+		L"Calculator That Doesn't Suck",
+		WS_OVERLAPPEDWINDOW & ~WS_MAXIMIZEBOX & ~WS_THICKFRAME,
+		20, 20, 360, 360,
 		nullptr,
 		nullptr,
 		wc.hInstance,
@@ -62,47 +62,119 @@ int main(int argc, char** argv) {
 	std::unique_ptr<gui::Manager> man = std::make_unique<gui::Manager>();
 	SetWindowLongPtr(hwnd, GWLP_USERDATA, (LONG_PTR) man.get());
 
-	gui::WID btn1, txt1;
-	gui::Container& panel = man->create<gui::Container>(gui::Rect{ 0, 0, 800, 32 });
-	panel.spacing = 2;
-	{
-		gui::TextBox& text = man->create<gui::TextBox>();
-		text.bounds.width = 120;
-		text.bounds.height = 25;
-		text.parent = panel.id();
-		text.alignment = gui::Alignment::Left;
-		panel.children.push_back(text.id());
-		txt1 = text.id();
-	}
+	gui::Container& panel = man->create<gui::Container>(0, gui::Rect{ 0, 0, 800, 40 }, gui::Flow::Vertical);
+
+	gui::TextBox& display = man->create<gui::TextBox>(panel.id());
+	display.bounds.height = 40;
+	display.flex = 0;
+	display.readOnly = true;
+	display.alignment = gui::Alignment::Right;
+	display.fontSize = 32;
+
+	wchar_t keypad[] = {
+		'7', '8', '9', '+',
+		'4', '5', '6', '-',
+		'1', '2', '3', L'×',
+		'.', '0', '=', L'÷'
+	};
+
+	static wchar_t op = '\0';
+	static float n1 = 0.0f;
+	static float ans = 0.0f;
+	static bool solved = false;
+
+	gui::Container& funcRow = man->create<gui::Container>(panel.id(), gui::Rect{ 0, 0, 800, 50 }, gui::Flow::Horizontal);
+	funcRow.flex = 0;
+	funcRow.border = 0;
 
 	{
-		gui::Button& btn = man->create<gui::Button>(L"Press Me!");
-		btn.bounds.width = 120;
-		btn.bounds.height = 25;
-		btn.parent = panel.id();
-		btn.flex = 0;
+		gui::Button& btn = man->create<gui::Button>(funcRow.id(), L"C");
+		btn.flex = 1;
+		btn.fontSize = 28;
 		btn.onPressed = [&]() {
-			auto text = (gui::TextBox*)man->get(txt1);
-			MessageBox(nullptr, text->text.c_str(), L"Message", MB_OK);
+			display.text = L"0";
+			display.updateAttributes();
 		};
-		panel.children.push_back(btn.id());
-		btn1 = btn.id();
 	}
 
 	{
-		gui::Button& btn = man->create<gui::Button>(L"Press Me Too!");
-		btn.bounds.width = 120;
-		btn.bounds.height = 25;
-		btn.parent = panel.id();
-		btn.flex = 0;
+		gui::Button& btn = man->create<gui::Button>(funcRow.id(), L"CE");
+		btn.flex = 1;
+		btn.fontSize = 28;
 		btn.onPressed = [&]() {
-			auto but = (gui::Button*) man->get(btn1);
-			but->text = L"NO TOUCHY!";
-			but->updateAttributes();
+			display.text = L"0";
+			display.updateAttributes();
+			op = '\0';
+			n1 = ans = 0.0f;
+			solved = false;
 		};
-		panel.children.push_back(btn.id());
 	}
 
+	for (int i = 0; i < 4; i++) {
+		gui::Container& row = man->create<gui::Container>(panel.id(), gui::Rect{ 0, 0, 800, 50 }, gui::Flow::Horizontal);
+		row.flex = 0;
+		row.border = 0;
+		for (int j = 0; j < 4; j++) {
+			wchar_t cop = keypad[j + i * 4];
+			gui::Button& numBtn = man->create<gui::Button>(row.id(), std::wstring(1, cop));
+			numBtn.fontSize = 28;
+			numBtn.onPressed = [&]() {
+				wchar_t chr = numBtn.text[0];
+				switch (chr) {
+					case '+':
+					case '-':
+					case L'×':
+					case L'÷':
+						if (op == '\0') n1 = std::stof(display.text);
+						else {
+							if (!solved) ans = std::stof(display.text);
+							else {
+								n1 = std::stof(display.text);
+								solved = false;
+							}
+						}
+
+						op = chr;
+						display.text = L"0";
+						display.updateAttributes();
+						break;
+					case '.':
+						display.text += L".";
+						display.updateAttributes();
+						break;
+					case '=': {
+						ans = std::stof(display.text);
+						bool divisionByZero = false;
+						switch (op) {
+							case '+': ans += n1; break;
+							case '-': ans -= n1; break;
+							case L'×': ans *= n1; break;
+							case L'÷': if (ans > 0.0f) { ans = n1 / ans; } else { divisionByZero = true; } break;
+						}
+						if (!divisionByZero) {
+							n1 = ans;
+							display.text = std::to_wstring(ans);
+							solved = true;
+						}  else display.text = L"Division by Zero!";
+						display.updateAttributes();
+					} break;
+					default:
+						if (solved) {
+							display.text = L"0";
+							op = '\0';
+							solved = false;
+						}
+						if (display.text == L"0") {
+							display.text = L"";
+						}
+						display.text += std::wstring(1, chr);
+						display.updateAttributes();
+						break;
+				}
+			};
+		}
+	}
+	
 	man->createWidgets(hwnd);
 
 	//FreeConsole();
