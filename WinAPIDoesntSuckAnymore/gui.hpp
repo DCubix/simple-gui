@@ -1169,30 +1169,6 @@ namespace gui {
 		Alignment alignment{ Alignment::Center };
 		std::wstring text{ L"" };
 
-		static LRESULT CALLBACK WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam, UINT_PTR, DWORD_PTR) {
-			switch (uMsg) {
-				case WM_COMMAND: {
-					auto id = LOWORD(wParam);
-					auto cmd = HIWORD(wParam);
-
-					if (id < 1000) return DefSubclassProc(hwnd, uMsg, wParam, lParam);
-					
-					switch (cmd) {
-						case EN_CHANGE: {
-							Widget* widget = (Widget*)GetWindowLongPtr(hwnd, GWLP_USERDATA);
-							TextBox* tb = static_cast<TextBox*>(widget);
-							if (id == tb->id()) {
-								wchar_t buf[1024];
-								GetWindowText(hwnd, buf, 1024);
-								tb->text = std::wstring(buf);
-							}
-						} break;
-					}
-				} break;
-				case WM_NCDESTROY: RemoveWindowSubclass(hwnd, WndProc, 0); break;
-			}
-			return DefSubclassProc(hwnd, uMsg, wParam, lParam);
-		}
 	};
 
 	class Container : public Widget {
@@ -1217,7 +1193,6 @@ namespace gui {
 
 		static LRESULT CALLBACK WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam, UINT_PTR, DWORD_PTR) {
 			switch (uMsg) {
-				default: std::cout << GetWMName(uMsg) << std::endl; break;
 				case WM_COMMAND: {
 					auto id = LOWORD(wParam);
 

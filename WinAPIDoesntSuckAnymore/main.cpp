@@ -5,6 +5,28 @@
 
 LRESULT CALLBACK WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
 	switch (uMsg) {
+		case WM_COMMAND: {
+			if (HIWORD(wParam) > 1) {
+				auto id = LOWORD(wParam);
+				auto cmd = HIWORD(wParam);
+
+				if (id < 1000) break;
+
+				switch (cmd) {
+					case EN_CHANGE: {
+						HWND widgetHnd = (HWND)lParam;
+
+						gui::Widget* widget = (gui::Widget*)GetWindowLongPtr(widgetHnd, GWLP_USERDATA);
+						gui::TextBox* tb = static_cast<gui::TextBox*>(widget);
+						if (id == tb->id()) {
+							wchar_t buf[1024];
+							GetWindowText(widgetHnd, buf, 1024);
+							tb->text = std::wstring(buf);
+						}
+					} break;
+				}
+			}
+		} break;
 		case WM_SHOWWINDOW: {
 			gui::Manager* man = (gui::Manager*)GetWindowLongPtr(hwnd, GWLP_USERDATA);
 			HFONT font = (HFONT) GetStockObject(DEFAULT_GUI_FONT);
