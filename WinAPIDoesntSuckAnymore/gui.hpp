@@ -1146,13 +1146,31 @@ namespace gui {
 
 	class TextBox : public Widget {
 	public:
+		~TextBox() {
+			Widget::~Widget();
+			DestroyWindow(m_wrapper);
+		}
+
 		void create() {
+			m_wrapper = CreateWindow(
+				L"STATIC",
+				nullptr,
+				WS_VISIBLE | WS_CHILD,
+				bounds.x, bounds.y, bounds.width, bounds.height,
+				parentHandle,
+				(HMENU)-1,
+				(HINSTANCE)GetWindowLongPtr(parentHandle, GWLP_HINSTANCE),
+				nullptr
+			);
+			SetWindowLongPtr(m_wrapper, GWLP_USERDATA, (LONG_PTR)this);
+			SetWindowSubclass(m_wrapper, TextBox::WndProc, 0, 0);
+
 			handle = CreateWindow(
 				L"EDIT",
 				text.c_str(),
 				WS_VISIBLE | WS_CHILD | WS_BORDER,
 				bounds.x, bounds.y, bounds.width, bounds.height,
-				parentHandle,
+				m_wrapper,
 				(HMENU)m_id,
 				(HINSTANCE)GetWindowLongPtr(parentHandle, GWLP_HINSTANCE),
 				nullptr
@@ -1160,7 +1178,38 @@ namespace gui {
 			SetWindowLongPtr(handle, GWLP_USERDATA, (LONG_PTR)this);
 		}
 
+		static LRESULT CALLBACK WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam, UINT_PTR, DWORD_PTR) {
+			switch (uMsg) {
+				case WM_COMMAND: {
+					if (HIWORD(wParam) > 1) {
+						auto id = LOWORD(wParam);
+						auto cmd = HIWORD(wParam);
+
+						if (id < 1000) break;
+
+						switch (cmd) {
+							case EN_CHANGE: {
+								HWND widgetHnd = (HWND)lParam;
+
+								gui::Widget* widget = (gui::Widget*)GetWindowLongPtr(widgetHnd, GWLP_USERDATA);
+								gui::TextBox* tb = static_cast<gui::TextBox*>(widget);
+								if (id == tb->id()) {
+									wchar_t buf[1024];
+									GetWindowText(widgetHnd, buf, 1024);
+									tb->text = std::wstring(buf);
+								}
+							} break;
+						}
+					}
+				} break;
+				case WM_NCDESTROY: RemoveWindowSubclass(hwnd, WndProc, 0); break;
+			}
+			return DefSubclassProc(hwnd, uMsg, wParam, lParam);
+		}
+
 		void updateAttributes() {
+			SetWindowPos(m_wrapper, nullptr, m_actualBounds.x, m_actualBounds.y, m_actualBounds.width, m_actualBounds.height, 0);
+
 			LONG_PTR style = GetWindowLongPtr(handle, GWL_STYLE);
 			SetWindowLongPtr(handle, GWL_STYLE, style | LONG_PTR(alignment));
 			SetWindowText(handle, text.c_str());
@@ -1168,7 +1217,8 @@ namespace gui {
 
 		Alignment alignment{ Alignment::Center };
 		std::wstring text{ L"" };
-
+	private:
+		HWND m_wrapper;
 	};
 
 	class Container : public Widget {
