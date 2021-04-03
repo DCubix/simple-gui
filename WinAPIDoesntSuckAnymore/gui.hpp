@@ -14,6 +14,8 @@
 
 #include <iostream>
 
+#include "threadpool.hpp"
+
 // thanks MaGetzUb
 #pragma comment(linker,"/manifestdependency:\"type='win32' "\
                        "name='Microsoft.Windows.Common-Controls' "\
@@ -1491,6 +1493,143 @@ namespace gui {
 				performContainerLayout(e);
 			}
 		}
+	};
+
+	static size_t WindowID = 0;
+	static ThreadPool TPool{ 20 };
+
+	constexpr int DefaultWidth = 320;
+	constexpr int DefaultHeight = 240;
+
+	class Window {
+	public:
+		Window() = default;
+		~Window() {
+			DestroyWindow(m_hwnd);
+		}
+
+		virtual void onCreate(Manager&) {}
+
+		void show() {
+			WNDCLASSEX cex = {};
+
+			HINSTANCE instance = GetModuleHandle(nullptr);
+
+			std::wstring cls = std::wstring(L"WAPIDSA_") + std::to_wstring(WindowID++);
+
+			cex.cbSize = sizeof(WNDCLASSEX);
+			cex.hbrBackground = (HBRUSH)GetStockObject(BLACK_BRUSH);
+			cex.hCursor = LoadCursor(instance, IDC_ARROW);
+			cex.hIcon = LoadIcon(instance, IDI_WINLOGO);
+			cex.hInstance = instance;
+			cex.lpfnWndProc = Window::WndProc;
+			cex.lpszClassName = cls.c_str();
+			cex.style = CS_HREDRAW | CS_VREDRAW;
+			cex.cbWndExtra = 0;
+			cex.cbClsExtra = 0;
+			cex.lpszMenuName = NULL;
+
+			if (!RegisterClassEx(&cex)) {
+				MessageBox(NULL, L"Failed to initialize window.", L"Error", MB_OK);
+				return;
+			}
+
+			RECT wect;
+			wect.left = GetSystemMetrics(SM_CXSCREEN) / 2 - DefaultWidth / 2;
+			wect.top = GetSystemMetrics(SM_CYSCREEN) / 2 - DefaultHeight / 2;
+			wect.right = wect.left + DefaultWidth;
+			wect.bottom = wect.top + DefaultHeight;
+
+			AdjustWindowRectEx(&wect, WS_OVERLAPPEDWINDOW, 0, 0);
+
+			m_hwnd = CreateWindowEx(
+				0,
+				cls.c_str(),
+				L"Window",
+				WS_OVERLAPPEDWINDOW,
+				wect.left, wect.top, wect.right - wect.left, wect.bottom - wect.top,
+				NULL, NULL,
+				instance,
+				NULL
+			);
+
+			m_manager = std::make_unique<Manager>();
+			SetWindowLongPtr(m_hwnd, GWLP_USERDATA, (LONG_PTR)m_manager.get());
+
+			ShowWindow(m_hwnd, SW_SHOW);
+
+			onCreate(*m_manager.get());
+			m_manager->createWidgets(m_hwnd);
+		}
+
+		static void mainLoop() {
+			MSG msg = {};
+			while (GetMessage(&msg, nullptr, 0, 0) > 0) {
+				TranslateMessage(&msg);
+				DispatchMessage(&msg);
+			}
+		}
+
+		static LRESULT CALLBACK WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+			switch (uMsg) {
+				case WM_CLOSE: DestroyWindow(hwnd); break;
+				case WM_SHOWWINDOW: {
+					Manager* man = (Manager*)GetWindowLongPtr(hwnd, GWLP_USERDATA);
+					HFONT font = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+					SendMessage(hwnd, WM_SETFONT, WPARAM(font), TRUE);
+
+					for (WID id : man->widgets()) {
+						Widget* wid = man->get(id);
+						SendMessage(wid->handle, WM_SETFONT, WPARAM(font), TRUE);
+					}
+				} break;
+				case WM_DESTROY: PostQuitMessage(0); break;
+				case WM_SIZE: {
+					Manager* man = (Manager*)GetWindowLongPtr(hwnd, GWLP_USERDATA);
+					UINT width = LOWORD(lParam);
+					UINT height = HIWORD(lParam);
+					Widget* cont = man->get(1000);
+					if (cont) {
+						cont->bounds.width = width;
+						cont->bounds.height = height;
+						man->updateWidgets();
+
+						InvalidateRect(hwnd, nullptr, true);
+						UpdateWindow(hwnd);
+					}
+				} break;
+				case WM_PAINT: {
+					PAINTSTRUCT ps;
+					HDC hdc = BeginPaint(hwnd, &ps);
+					FillRect(hdc, &ps.rcPaint, (HBRUSH)COLOR_WINDOW);
+					EndPaint(hwnd, &ps);
+				} break;
+			}
+			return DefWindowProc(hwnd, uMsg, wParam, lParam);
+		}
+
+		void resize(int width, int height) {	
+			RECT wect;
+			GetWindowRect(m_hwnd, &wect);
+
+			SetWindowPos(m_hwnd, nullptr, wect.left, wect.top, width, height, 0);
+
+			RECT nect;
+			nect.left = wect.left;
+			nect.top = wect.top;
+			nect.right = wect.left + width;
+			nect.bottom = wect.top + height;
+
+			AdjustWindowRectEx(&nect, WS_OVERLAPPEDWINDOW, 0, 0);
+		}
+
+		void setTitle(const std::wstring& title) {
+			SetWindowText(m_hwnd, title.c_str());
+		}
+
+	private:
+		HWND m_hwnd;
+		std::unique_ptr<Manager> m_manager;
 	};
 
 }
