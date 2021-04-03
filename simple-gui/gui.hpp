@@ -2,6 +2,7 @@
 #define GUI_HPP
 
 #include <Windows.h>
+#include <windowsx.h>
 
 #include <CommCtrl.h>
 #pragma comment(lib, "Comctl32.lib")
@@ -13,6 +14,10 @@
 #include <functional>
 
 #include <iostream>
+#include <cstdint>
+
+#include <gl/GL.h>
+#pragma comment (lib, "opengl32.lib")
 
 // thanks MaGetzUb
 #pragma comment(linker,"/manifestdependency:\"type='win32' "\
@@ -289,54 +294,6 @@ namespace gui {
 		HWND m_wrapper;
 	};
 
-	class Container : public Widget {
-	public:
-		Container() = default;
-		Container(Size b, Flow flow = Flow::Horizontal) { size = b; this->flow = flow; }
-
-		void create() {
-			handle = CreateWindow(
-				L"STATIC",
-				nullptr,
-				WS_VISIBLE | WS_CHILD,
-				0, 0, size.width, size.height,
-				parentHandle,
-				(HMENU)m_id,
-				(HINSTANCE)GetWindowLongPtr(parentHandle, GWLP_HINSTANCE),
-				nullptr
-			);
-			SetWindowLongPtr(handle, GWLP_USERDATA, (LONG_PTR)this);
-			SetWindowSubclass(handle, Container::WndProc, 0, 0);
-		}
-
-		static LRESULT CALLBACK WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam, UINT_PTR, DWORD_PTR) {
-			switch (uMsg) {
-				case WM_COMMAND: {
-					auto id = LOWORD(wParam);
-
-					if (id < BaseWidgetID) return DefSubclassProc(hwnd, uMsg, wParam, lParam);
-					HWND widgetHnd = GetDlgItem(hwnd, id);
-					if (!widgetHnd) return DefSubclassProc(hwnd, uMsg, wParam, lParam);
-
-					Widget* widget = (Widget*)GetWindowLongPtr(widgetHnd, GWLP_USERDATA);
-					// TODO: Make this not hacky
-					Button* btn = dynamic_cast<Button*>(widget);
-					if (btn && btn->onPressed && id == btn->id()) {
-						btn->onPressed();
-					}
-
-				} break;
-				case WM_NCDESTROY: RemoveWindowSubclass(hwnd, WndProc, 0); break;
-			}
-			return DefSubclassProc(hwnd, uMsg, wParam, lParam);
-		}
-
-		int border{ 4 }, spacing{ 4 };
-		Flow flow{ Flow::Horizontal };
-
-		std::vector<WID> children{};
-	};
-
 	class Spacer : public Widget {
 	public:
 		void create() {
@@ -353,14 +310,14 @@ namespace gui {
 		}
 	};
 
-	class ListBoxItem {
+	class ListItem {
 	public:
-		virtual String toString() { return TEXT("gui::ListBoxItem"); };
+		virtual String toString() { return TEXT("gui::ListItem"); };
 	};
 
-	class SimpleListBoxItem : public ListBoxItem {
+	class SimpleListItem : public ListItem {
 	public:
-		SimpleListBoxItem(String d) : data(d) {}
+		SimpleListItem(String d) : data(d) {}
 		String toString() override { return data; };
 
 		String data;
@@ -432,8 +389,8 @@ namespace gui {
 			SetWindowPos(m_wrapper, nullptr, m_actualBounds.x, m_actualBounds.y, m_actualBounds.width, m_actualBounds.height, 0);
 		}
 
-		void add(ListBoxItem* item) {
-			m_items.push_back(std::unique_ptr<ListBoxItem>(item));
+		void add(ListItem* item) {
+			m_items.push_back(std::unique_ptr<ListItem>(item));
 			if (handle) winapiAdd(m_items.size() - 1);
 		}
 
@@ -455,11 +412,11 @@ namespace gui {
 			return sels;
 		}
 
-		const std::vector<std::unique_ptr<ListBoxItem>>& items() {
+		const std::vector<std::unique_ptr<ListItem>>& items() {
 			return m_items;
 		}
 
-		ListBoxItem* get(int id) {
+		ListItem* get(int id) {
 			if (id < 0) return nullptr;
 			if (!handle) return m_items[id].get();
 			int dataID = SendMessage(handle, LB_GETITEMDATA, WPARAM(id), 0);
@@ -471,18 +428,406 @@ namespace gui {
 			else SendMessage(handle, LB_SETCURSEL, id, 0);
 		}
 
-		std::function<void(int, ListBoxItem*)> onSelected;
+		std::function<void(int, ListItem*)> onSelected;
 
 	private:
 		HWND m_wrapper;
-		std::vector<std::unique_ptr<ListBoxItem>> m_items;
+		std::vector<std::unique_ptr<ListItem>> m_items;
 		int m_tempSelected{ -1 };
 
 		void winapiAdd(int item) {
-			ListBoxItem* it = m_items[item].get();
+			ListItem* it = m_items[item].get();
 			int pos = SendMessage(handle, LB_ADDSTRING, 0, (LPARAM)it->toString().c_str());
 			SendMessage(handle, LB_SETITEMDATA, pos, LPARAM(item));
 		}
+
+	};
+
+	class ComboBox : public Widget {
+	public:
+		~ComboBox() {
+			Widget::~Widget();
+			DestroyWindow(m_wrapper);
+		}
+
+		void create() {
+			m_wrapper = CreateWindow(
+				L"STATIC",
+				nullptr,
+				WS_VISIBLE | WS_CHILD,
+				0, 0, size.width, size.height,
+				parentHandle,
+				(HMENU)-1,
+				(HINSTANCE)GetWindowLongPtr(parentHandle, GWLP_HINSTANCE),
+				nullptr
+			);
+			SetWindowLongPtr(m_wrapper, GWLP_USERDATA, (LONG_PTR)this);
+			SetWindowSubclass(m_wrapper, ComboBox::WndProc, 0, 0);
+
+			handle = CreateWindow(
+				WC_COMBOBOX,
+				L"",
+				WS_CHILD | WS_OVERLAPPED | WS_VISIBLE | CBS_HASSTRINGS | CBS_DROPDOWNLIST,
+				0, 0, size.width, size.height,
+				m_wrapper,
+				(HMENU)m_id,
+				(HINSTANCE)GetWindowLongPtr(parentHandle, GWLP_HINSTANCE),
+				nullptr
+			);
+			SetWindowLongPtr(handle, GWLP_USERDATA, (LONG_PTR)this);
+
+			for (int i = 0; i < m_items.size(); i++) {
+				winapiAdd(i);
+			}
+			SendMessage(handle, CB_SETCURSEL, m_tempSelected, 0);
+		}
+
+		static LRESULT CALLBACK WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam, UINT_PTR, DWORD_PTR) {
+			switch (uMsg) {
+				case WM_COMMAND: {
+					HWND lbox = (HWND)lParam;
+					auto id = LOWORD(wParam);
+					auto cmd = HIWORD(wParam);
+
+					if (id < BaseWidgetID) break;
+
+					switch (cmd) {
+						case CBN_SELCHANGE: {
+							ComboBox* lst = (ComboBox*)GetWindowLongPtr(lbox, GWLP_USERDATA);
+							int idx = SendMessage(lbox, CB_GETCURSEL, 0, 0);
+							if (lst->onSelected) lst->onSelected(idx, lst->get(idx));
+						} break;
+					}
+				} break;
+				case WM_NCDESTROY: RemoveWindowSubclass(hwnd, WndProc, 0); break;
+			}
+			return DefSubclassProc(hwnd, uMsg, wParam, lParam);
+		}
+
+		void updateAttributes() {
+			SetWindowPos(m_wrapper, nullptr, m_actualBounds.x, m_actualBounds.y, m_actualBounds.width, m_actualBounds.height, 0);
+		}
+
+		void add(ListItem* item) {
+			m_items.push_back(std::unique_ptr<ListItem>(item));
+			if (handle) winapiAdd(m_items.size() - 1);
+		}
+
+		void remove(int idx) {
+			m_items.erase(m_items.begin() + idx);
+			if (handle) {
+				SendMessage(handle, CB_DELETESTRING, WPARAM(idx), 0);
+			}
+		}
+
+		int selected() {
+			if (!handle) return -1;
+			return SendMessage(handle, CB_GETCURSEL, 0, 0);
+		}
+
+		const std::vector<std::unique_ptr<ListItem>>& items() {
+			return m_items;
+		}
+
+		ListItem* get(int id) {
+			if (id < 0) return nullptr;
+			if (!handle) return m_items[id].get();
+			int dataID = SendMessage(handle, CB_GETITEMDATA, WPARAM(id), 0);
+			return m_items[dataID].get();
+		}
+
+		void select(int id) {
+			if (!handle) m_tempSelected = id;
+			else SendMessage(handle, CB_SETCURSEL, id, 0);
+		}
+
+		std::function<void(int, ListItem*)> onSelected;
+
+	private:
+		HWND m_wrapper;
+		std::vector<std::unique_ptr<ListItem>> m_items;
+		int m_tempSelected{ -1 };
+
+		void winapiAdd(int item) {
+			ListItem* it = m_items[item].get();
+			int pos = ComboBox_AddString(handle, it->toString().c_str());
+			ComboBox_SetItemData(handle, pos, item);
+		}
+
+	};
+
+#pragma region OpenGL
+
+#define WGL_CONTEXT_MAJOR_VERSION_ARB             0x2091
+#define WGL_CONTEXT_MINOR_VERSION_ARB             0x2092
+#define WGL_CONTEXT_PROFILE_MASK_ARB              0x9126
+
+#define WGL_CONTEXT_CORE_PROFILE_BIT_ARB          0x00000001
+#define WGL_CONTEXT_COMPATIBILITY_PROFILE_BIT_ARB 0x00000002
+
+#define WGL_DRAW_TO_WINDOW_ARB                    0x2001
+#define WGL_ACCELERATION_ARB                      0x2003
+#define WGL_SUPPORT_OPENGL_ARB                    0x2010
+#define WGL_DOUBLE_BUFFER_ARB                     0x2011
+#define WGL_PIXEL_TYPE_ARB                        0x2013
+#define WGL_COLOR_BITS_ARB                        0x2014
+#define WGL_DEPTH_BITS_ARB                        0x2022
+#define WGL_STENCIL_BITS_ARB                      0x2023
+
+#define WGL_FULL_ACCELERATION_ARB                 0x2027
+#define WGL_TYPE_RGBA_ARB                         0x202B
+
+	namespace gl {
+		typedef HGLRC WINAPI wglCreateContextAttribsARB_type(HDC hdc, HGLRC hShareContext, const int* attribList);
+		wglCreateContextAttribsARB_type* wglCreateContextAttribsARB;
+
+		typedef BOOL WINAPI wglChoosePixelFormatARB_type(HDC hdc, const int* piAttribIList,
+			const FLOAT* pfAttribFList, UINT nMaxFormats, int* piFormats, UINT* nNumFormats);
+		wglChoosePixelFormatARB_type* wglChoosePixelFormatARB;
+
+		static void error(const std::wstring& text) {
+			MessageBox(nullptr, text.c_str(), L"Error", MB_OK | MB_ICONERROR);
+		}
+
+		static void initializeGL() {
+			if (wglCreateContextAttribsARB) return;
+
+			WNDCLASSEX cls = {};
+			cls.style = CS_HREDRAW | CS_VREDRAW | CS_OWNDC;
+			cls.lpfnWndProc = DefWindowProcA;
+			cls.hInstance = GetModuleHandle(0);
+			cls.lpszClassName = L"Dummy_WGL";
+			cls.cbSize = sizeof(WNDCLASSEX);
+
+			if (!RegisterClassEx(&cls)) {
+				error(L"Failed to register OpenGL window.");
+				return;
+			}
+
+			HWND dummy_window = CreateWindowEx(
+				0,
+				cls.lpszClassName,
+				L"Dummy OpenGL",
+				0,
+				CW_USEDEFAULT,
+				CW_USEDEFAULT,
+				CW_USEDEFAULT,
+				CW_USEDEFAULT,
+				0,
+				0,
+				cls.hInstance,
+				0
+			);
+
+			if (!dummy_window) {
+				error(L"Failed to create OpenGL window.");
+			}
+
+			HDC dummy_dc = GetDC(dummy_window);
+
+			PIXELFORMATDESCRIPTOR pfd = {};
+			pfd.nSize = sizeof(pfd);
+			pfd.nVersion = 1;
+			pfd.iPixelType = PFD_TYPE_RGBA;
+			pfd.dwFlags = PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL | PFD_DOUBLEBUFFER;
+			pfd.cColorBits = 32;
+			pfd.cAlphaBits = 8;
+			pfd.iLayerType = PFD_MAIN_PLANE;
+			pfd.cDepthBits = 24;
+			pfd.cStencilBits = 8;
+
+			int pixel_format = ChoosePixelFormat(dummy_dc, &pfd);
+			if (!pixel_format) {
+				error(L"Failed to find a suitable pixel format.");
+			}
+			if (!SetPixelFormat(dummy_dc, pixel_format, &pfd)) {
+				error(L"Failed to set the pixel format.");
+			}
+
+			HGLRC dummy_context = wglCreateContext(dummy_dc);
+			if (!dummy_context) {
+				error(L"Failed to create a dummy OpenGL rendering context.");
+			}
+
+			if (!wglMakeCurrent(dummy_dc, dummy_context)) {
+				error(L"Failed to activate dummy OpenGL rendering context.");
+			}
+
+			wglCreateContextAttribsARB = (wglCreateContextAttribsARB_type*)wglGetProcAddress(
+				"wglCreateContextAttribsARB");
+			wglChoosePixelFormatARB = (wglChoosePixelFormatARB_type*)wglGetProcAddress(
+				"wglChoosePixelFormatARB");
+
+			wglMakeCurrent(dummy_dc, 0);
+			wglDeleteContext(dummy_context);
+			ReleaseDC(dummy_window, dummy_dc);
+			DestroyWindow(dummy_window);
+		}
+	};
+
+	struct OpenGLContextConfig {
+		uint8_t depthBits{ 24 },
+			stencilBits{ 8 },
+			redBits{ 8 },
+			greenBits{ 8 },
+			blueBits{ 8 },
+			alphaBits{ 8 },
+			majorVersion{ 1 },
+			minorVersion{ 1 };
+		enum Profile {
+			ProfileCore = WGL_CONTEXT_CORE_PROFILE_BIT_ARB,
+			ProfileCompat = WGL_CONTEXT_COMPATIBILITY_PROFILE_BIT_ARB
+		} profile{ ProfileCompat };
+	};
+
+	class GLView : public Widget {
+	public:
+		~GLView() {
+			if (m_context) wglDeleteContext(m_context);
+			Widget::~Widget();
+		}
+
+		void create() {
+			gl::initializeGL();
+
+			WNDCLASS wc = { 0 };
+			wc.style = CS_GLOBALCLASS | CS_HREDRAW | CS_VREDRAW;
+			wc.lpfnWndProc = GLView::WndProc;
+			wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+			wc.lpszClassName = TEXT("GLVIEW");
+			RegisterClass(&wc);
+
+			handle = CreateWindow(
+				TEXT("GLVIEW"),
+				nullptr,
+				WS_VISIBLE | WS_CHILD | WS_BORDER | SS_OWNERDRAW,
+				0, 0, size.width, size.height,
+				parentHandle,
+				(HMENU)m_id,
+				(HINSTANCE)GetWindowLongPtr(parentHandle, GWLP_HINSTANCE),
+				nullptr
+			);
+			SetWindowLongPtr(handle, GWLP_USERDATA, (LONG_PTR)this);
+
+			int pixel_format_attribs[] = {
+				WGL_DRAW_TO_WINDOW_ARB,     GL_TRUE,
+				WGL_SUPPORT_OPENGL_ARB,     GL_TRUE,
+				WGL_DOUBLE_BUFFER_ARB,      GL_TRUE,
+				WGL_ACCELERATION_ARB,       WGL_FULL_ACCELERATION_ARB,
+				WGL_PIXEL_TYPE_ARB,         WGL_TYPE_RGBA_ARB,
+				WGL_COLOR_BITS_ARB,         32,
+				WGL_DEPTH_BITS_ARB,         m_config.depthBits,
+				WGL_STENCIL_BITS_ARB,       m_config.stencilBits,
+				0
+			};
+
+			m_dc = GetDC(handle);
+			
+			int pixel_format;
+			UINT num_formats;
+			if (!gl::wglChoosePixelFormatARB(m_dc, pixel_format_attribs, 0, 1, &pixel_format, &num_formats)) {
+				MessageBox(nullptr, L"Failed to choose pixel format.", L"Error", MB_OK);
+				return;
+			}
+
+			PIXELFORMATDESCRIPTOR pfd = {};
+			DescribePixelFormat(m_dc, pixel_format, sizeof(PIXELFORMATDESCRIPTOR), &pfd);
+
+			pfd.cRedBits = m_config.redBits;
+			pfd.cGreenBits = m_config.greenBits;
+			pfd.cBlueBits = m_config.blueBits;
+			pfd.cAlphaBits = m_config.alphaBits;
+
+			if (!SetPixelFormat(m_dc, pixel_format, &pfd)) {
+				MessageBox(nullptr, L"Failed to set pixel format.", L"Error", MB_OK);
+				return;
+			}
+			
+			int gl_attribs[] = {
+				WGL_CONTEXT_MAJOR_VERSION_ARB, m_config.majorVersion,
+				WGL_CONTEXT_MINOR_VERSION_ARB, m_config.minorVersion,
+				WGL_CONTEXT_PROFILE_MASK_ARB,  m_config.profile,
+				0,
+			};
+			
+			m_context = gl::wglCreateContextAttribsARB(m_dc, 0, gl_attribs);
+			if (!wglMakeCurrent(m_dc, m_context)) {
+				MessageBox(nullptr, L"Failed to make OpenGL context as current.", L"Error", MB_OK);
+				return;
+			}
+		}
+
+		virtual void onPaint() {}
+
+		void swapBuffers() {
+			SwapBuffers(m_dc);
+		}
+
+		static LRESULT CALLBACK WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+			GLView* glv = (GLView*)GetWindowLongPtr(hwnd, GWLP_USERDATA);
+			switch (uMsg) {
+				case WM_PAINT:
+					glViewport(0, 0, glv->actualBounds().width, glv->actualBounds().height);
+					glv->onPaint();
+					glv->swapBuffers();
+					return 0;
+			}
+			return DefWindowProc(hwnd, uMsg, wParam, lParam);
+		}
+
+	private:
+		HDC m_dc;
+		OpenGLContextConfig m_config;
+		HGLRC m_context;
+	};
+#pragma endregion
+
+	class Container : public Widget {
+	public:
+		Container() = default;
+		Container(Size b, Flow flow = Flow::Horizontal) { size = b; this->flow = flow; }
+
+		void create() {
+			handle = CreateWindow(
+				L"STATIC",
+				nullptr,
+				WS_VISIBLE | WS_CHILD,
+				0, 0, size.width, size.height,
+				parentHandle,
+				(HMENU)m_id,
+				(HINSTANCE)GetWindowLongPtr(parentHandle, GWLP_HINSTANCE),
+				nullptr
+			);
+			SetWindowLongPtr(handle, GWLP_USERDATA, (LONG_PTR)this);
+			SetWindowSubclass(handle, Container::WndProc, 0, 0);
+		}
+
+		static LRESULT CALLBACK WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam, UINT_PTR, DWORD_PTR) {
+			switch (uMsg) {
+				case WM_COMMAND: {
+					auto id = LOWORD(wParam);
+
+					if (id < BaseWidgetID) return DefSubclassProc(hwnd, uMsg, wParam, lParam);
+					HWND widgetHnd = GetDlgItem(hwnd, id);
+					if (!widgetHnd) return DefSubclassProc(hwnd, uMsg, wParam, lParam);
+
+					Widget* widget = (Widget*)GetWindowLongPtr(widgetHnd, GWLP_USERDATA);
+					// TODO: Make this not hacky
+					Button* btn = dynamic_cast<Button*>(widget);
+					if (btn && btn->onPressed && id == btn->id()) {
+						btn->onPressed();
+					}
+
+				} break;
+				case WM_NCDESTROY: RemoveWindowSubclass(hwnd, WndProc, 0); break;
+			}
+			return DefSubclassProc(hwnd, uMsg, wParam, lParam);
+		}
+
+		int border{ 4 }, spacing{ 4 };
+		Flow flow{ Flow::Horizontal };
+
+		std::vector<WID> children{};
 	};
 
 	class Manager {
@@ -684,10 +1029,8 @@ namespace gui {
 
 			m_manager->create<Container>(0, Size{ 1, 1 });
 			onCreate(*m_manager.get());
-			m_manager->createWidgets(m_hwnd);
 
 			ShowWindow(m_hwnd, SW_SHOW);
-
 		}
 
 		Container& root() { return *((Container*) m_manager->get(BaseWidgetID)); }
@@ -705,6 +1048,8 @@ namespace gui {
 				case WM_CLOSE: DestroyWindow(hwnd); break;
 				case WM_SHOWWINDOW: {
 					Manager* man = (Manager*)GetWindowLongPtr(hwnd, GWLP_USERDATA);
+					man->createWidgets(hwnd);
+
 					HFONT font = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
 					SendMessage(hwnd, WM_SETFONT, WPARAM(font), TRUE);
 

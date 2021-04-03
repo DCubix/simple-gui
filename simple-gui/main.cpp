@@ -1,7 +1,6 @@
 #include <iostream>
 
 #include "gui.hpp"
-#include <windowsx.h>
 
 class Calculator : public gui::Window {
 public:
@@ -128,6 +127,28 @@ public:
 	bool solved{ false };
 };
 
+class OpenGLTriangle : public gui::GLView {
+public:
+	void onPaint() override {
+		glLoadIdentity();
+
+		glClear(GL_COLOR_BUFFER_BIT);
+
+		glBegin(GL_TRIANGLES);
+
+		glColor3f(1.0f, 0.0f, 0.0f);
+		glVertex3f(0.0f, -1.0f, 0.0f);
+
+		glColor3f(0.0f, 1.0f, 0.0f);
+		glVertex3f(-1.0f, 1.0f, 0.0f);
+
+		glColor3f(0.0f, 0.0f, 1.0f);
+		glVertex3f(1.0f, 1.0f, 0.0f);
+
+		glEnd();
+	}
+};
+
 class WidgetsTest : public gui::Window {
 public:
 	void onCreate(gui::Manager& man) override {
@@ -136,16 +157,15 @@ public:
 		gui::Container& rootPane = root();
 		rootPane.flow = gui::Flow::Vertical;
 
-		gui::ListBox& lb = man.create<gui::ListBox>(rootPane.id());
-		lb.size.height = 200;
-		for (int i = 0; i < 100; i++) {
-			lb.add(new gui::SimpleListBoxItem(gui::String(L"Item ") + std::to_wstring(i+1)));
-		}
-		lb.select(5);
+		OpenGLTriangle& glv = man.create<OpenGLTriangle>(rootPane.id());
 
-		lb.onSelected = [](int idx, gui::ListBoxItem* text) {
-			std::wcout << L"Selected: " << text->toString() << std::endl;
-		};
+		gui::Container& buttonPane = man.create<gui::Container>(rootPane.id());
+		buttonPane.flex = 0;
+		buttonPane.size.height = 40;
+
+		gui::Button& btn = man.create<gui::Button>(buttonPane.id(), L"Button");
+		btn.size.width = 120;
+		btn.flex = 0;
 	}
 };
 
