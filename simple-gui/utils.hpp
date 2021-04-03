@@ -1,7 +1,9 @@
 #ifndef UTILS_HPP
 #define UTILS_HPP
 
-const char* GetWMName(unsigned int msg) {
+#include <string>
+
+std::string GetWMName(unsigned int msg) {
 	switch (msg) {
 		case 0: return "WM_NULL";
 		case 1: return "WM_CREATE";
@@ -1004,6 +1006,6 @@ const char* GetWMName(unsigned int msg) {
 		case 32768: return "WM_APP";
 		case 52429: return "WM_RASDIALEVENT";
 	}
-	return "";
+	return std::string("UNKNOWN(") + std::to_string(msg) + std::string(")");
 }
 #endif // UTILS_HPP

@@ -59,7 +59,7 @@ public:
 			row.border = 0;
 			for (int j = 0; j < 4; j++) {
 				wchar_t cop = keypad[j + i * 4];
-				gui::Button& numBtn = man.create<gui::Button>(row.id(), std::wstring(1, cop));
+				gui::Button& numBtn = man.create<gui::Button>(row.id(), gui::String(1, cop));
 				numBtn.fontSize = 28;
 				numBtn.onPressed = [&]() {
 					wchar_t chr = numBtn.text[0];
@@ -110,7 +110,7 @@ public:
 							if (display.text == L"0") {
 								display.text = L"";
 							}
-							display.text += std::wstring(1, chr);
+							display.text += gui::String(1, chr);
 							display.updateAttributes();
 							break;
 					}
@@ -128,9 +128,33 @@ public:
 	bool solved{ false };
 };
 
+class WidgetsTest : public gui::Window {
+public:
+	void onCreate(gui::Manager& man) override {
+		setTitle(L"Widgets");
+
+		gui::Container& rootPane = root();
+		rootPane.flow = gui::Flow::Vertical;
+
+		gui::ListBox& lb = man.create<gui::ListBox>(rootPane.id());
+		lb.size.height = 200;
+		for (int i = 0; i < 100; i++) {
+			lb.add(new gui::SimpleListBoxItem(gui::String(L"Item ") + std::to_wstring(i+1)));
+		}
+		lb.select(5);
+
+		lb.onSelected = [](int idx, gui::ListBoxItem* text) {
+			std::wcout << L"Selected: " << text->toString() << std::endl;
+		};
+	}
+};
+
 int main(int argc, char** argv) {
-	Calculator cal1{};
-	cal1.show();
+	//Calculator cal1{};
+	//cal1.show();
+
+	WidgetsTest wt{};
+	wt.show();
 
 	gui::Window::mainLoop();
 	

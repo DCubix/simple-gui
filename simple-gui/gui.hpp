@@ -37,6 +37,8 @@ namespace gui {
 	struct Rect { int x, y, width, height; };
 
 	using WID = size_t;
+	using String = std::basic_string<TCHAR>;
+
 	constexpr WID BaseWidgetID = 1000;
 	
 	class Container;
@@ -82,7 +84,7 @@ namespace gui {
 
 	class Label : public Widget {
 	public:
-		Label(const std::wstring& text = L"") : text(text) { }
+		Label(const String& text = L"") : text(text) { }
 
 		void create() {
 			handle = CreateWindow(
@@ -125,9 +127,9 @@ namespace gui {
 		}
 
 		Alignment alignment{ Alignment::Center };
-		std::wstring text{ L"Text" };
+		String text{ L"Text" };
 
-		std::wstring fontFamily{ L"Segoe UI" };
+		String fontFamily{ L"Segoe UI" };
 		int fontSize{ 16 };
 	private:
 		HFONT m_font{ nullptr };
@@ -135,7 +137,7 @@ namespace gui {
 
 	class Button : public Widget {
 	public:
-		Button(const std::wstring& text = L"") : text(text) {}
+		Button(const String& text = L"") : text(text) {}
 
 		void create() {
 			handle = CreateWindow(
@@ -167,10 +169,10 @@ namespace gui {
 			SendMessage(handle, WM_SETFONT, WPARAM(m_font), TRUE);
 		}
 
-		std::wstring text{ L"Button" };
+		String text{ L"Button" };
 		std::function<void()> onPressed;
 
-		std::wstring fontFamily{ L"Segoe UI" };
+		String fontFamily{ L"Segoe UI" };
 		int fontSize{ 16 };
 	private:
 		HFONT m_font{ nullptr };
@@ -228,7 +230,7 @@ namespace gui {
 								if (id == tb->id()) {
 									wchar_t buf[1024];
 									GetWindowText(widgetHnd, buf, 1024);
-									tb->text = std::wstring(buf);
+									tb->text = String(buf);
 								}
 							} break;
 						}
@@ -277,9 +279,9 @@ namespace gui {
 
 		bool multiLine{ false }, password{ false }, readOnly{ false };
 		Alignment alignment{ Alignment::Left };
-		std::wstring text{ L"" };
+		String text{ L"" };
 		
-		std::wstring fontFamily{ L"Segoe UI" };
+		String fontFamily{ L"Segoe UI" };
 		int fontSize{ 16 };
 
 	private:
@@ -348,6 +350,138 @@ namespace gui {
 				(HINSTANCE)GetWindowLongPtr(parentHandle, GWLP_HINSTANCE),
 				nullptr
 			);
+		}
+	};
+
+	class ListBoxItem {
+	public:
+		virtual String toString() { return TEXT("gui::ListBoxItem"); };
+	};
+
+	class SimpleListBoxItem : public ListBoxItem {
+	public:
+		SimpleListBoxItem(String d) : data(d) {}
+		String toString() override { return data; };
+
+		String data;
+	};
+
+	class ListBox : public Widget {
+	public:
+		~ListBox() {
+			Widget::~Widget();
+			DestroyWindow(m_wrapper);
+		}
+
+		void create() {
+			m_wrapper = CreateWindow(
+				L"STATIC",
+				nullptr,
+				WS_VISIBLE | WS_CHILD,
+				0, 0, size.width, size.height,
+				parentHandle,
+				(HMENU)-1,
+				(HINSTANCE)GetWindowLongPtr(parentHandle, GWLP_HINSTANCE),
+				nullptr
+			);
+			SetWindowLongPtr(m_wrapper, GWLP_USERDATA, (LONG_PTR)this);
+			SetWindowSubclass(m_wrapper, ListBox::WndProc, 0, 0);
+
+			handle = CreateWindowEx(
+				WS_EX_CLIENTEDGE,
+				L"LISTBOX",
+				nullptr,
+				WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_AUTOVSCROLL | LBS_NOTIFY,
+				0, 0, size.width, size.height,
+				m_wrapper,
+				(HMENU)m_id,
+				(HINSTANCE)GetWindowLongPtr(parentHandle, GWLP_HINSTANCE),
+				nullptr
+			);
+			SetWindowLongPtr(handle, GWLP_USERDATA, (LONG_PTR)this);
+
+			for (int i = 0; i < m_items.size(); i++) {
+				winapiAdd(i);
+			}
+			SendMessage(handle, LB_SETCURSEL, m_tempSelected, 0);
+		}
+
+		static LRESULT CALLBACK WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam, UINT_PTR, DWORD_PTR) {
+			switch (uMsg) {
+				case WM_COMMAND: {
+					HWND lbox = (HWND)lParam;
+					auto id = LOWORD(wParam);
+					auto cmd = HIWORD(wParam);
+
+					if (id < BaseWidgetID) break;
+
+					switch (cmd) {
+						case LBN_SELCHANGE: {
+							ListBox* lst = (ListBox*)GetWindowLongPtr(lbox, GWLP_USERDATA);
+							int idx = SendMessage(lbox, LB_GETCURSEL, 0, 0);
+							if (lst->onSelected) lst->onSelected(idx, lst->get(idx));
+						} break;
+					}
+				} break;
+				case WM_NCDESTROY: RemoveWindowSubclass(hwnd, WndProc, 0); break;
+			}
+			return DefSubclassProc(hwnd, uMsg, wParam, lParam);
+		}
+
+		void updateAttributes() {
+			SetWindowPos(m_wrapper, nullptr, m_actualBounds.x, m_actualBounds.y, m_actualBounds.width, m_actualBounds.height, 0);
+		}
+
+		void add(ListBoxItem* item) {
+			m_items.push_back(std::unique_ptr<ListBoxItem>(item));
+			if (handle) winapiAdd(m_items.size() - 1);
+		}
+
+		void remove(int idx) {
+			m_items.erase(m_items.begin() + idx);
+			if (handle) {
+				SendMessage(handle, LB_DELETESTRING, WPARAM(idx), 0);
+			}
+		}
+
+		std::vector<int> selected() {
+			std::vector<int> sels;
+			if (!handle) return sels;
+			
+			LRESULT len = SendMessage(handle, LB_GETSELCOUNT, 0, 0);
+			sels.resize(len);
+
+			SendMessage(handle, LB_GETSELITEMS, len, LPARAM(sels.data()));
+			return sels;
+		}
+
+		const std::vector<std::unique_ptr<ListBoxItem>>& items() {
+			return m_items;
+		}
+
+		ListBoxItem* get(int id) {
+			if (id < 0) return nullptr;
+			if (!handle) return m_items[id].get();
+			int dataID = SendMessage(handle, LB_GETITEMDATA, WPARAM(id), 0);
+			return m_items[dataID].get();
+		}
+
+		void select(int id) {
+			if (!handle) m_tempSelected = id;
+			else SendMessage(handle, LB_SETCURSEL, id, 0);
+		}
+
+		std::function<void(int, ListBoxItem*)> onSelected;
+
+	private:
+		HWND m_wrapper;
+		std::vector<std::unique_ptr<ListBoxItem>> m_items;
+		int m_tempSelected{ -1 };
+
+		void winapiAdd(int item) {
+			ListBoxItem* it = m_items[item].get();
+			int pos = SendMessage(handle, LB_ADDSTRING, 0, (LPARAM)it->toString().c_str());
+			SendMessage(handle, LB_SETITEMDATA, pos, LPARAM(item));
 		}
 	};
 
@@ -507,7 +641,7 @@ namespace gui {
 
 			HINSTANCE instance = GetModuleHandle(nullptr);
 
-			std::wstring cls = std::wstring(L"WAPIDSA_") + std::to_wstring(WindowID++);
+			String cls = String(L"WAPIDSA_") + std::to_wstring(WindowID++);
 
 			cex.cbSize = sizeof(WNDCLASSEX);
 			cex.hbrBackground = (HBRUSH)GetStockObject(BLACK_BRUSH);
@@ -548,11 +682,12 @@ namespace gui {
 			m_manager = std::make_unique<Manager>();
 			SetWindowLongPtr(m_hwnd, GWLP_USERDATA, (LONG_PTR)m_manager.get());
 
-			ShowWindow(m_hwnd, SW_SHOW);
-
 			m_manager->create<Container>(0, Size{ 1, 1 });
 			onCreate(*m_manager.get());
 			m_manager->createWidgets(m_hwnd);
+
+			ShowWindow(m_hwnd, SW_SHOW);
+
 		}
 
 		Container& root() { return *((Container*) m_manager->get(BaseWidgetID)); }
@@ -618,7 +753,7 @@ namespace gui {
 			AdjustWindowRectEx(&nect, WS_OVERLAPPEDWINDOW, 0, 0);
 		}
 
-		void setTitle(const std::wstring& title) {
+		void setTitle(const String& title) {
 			SetWindowText(m_hwnd, title.c_str());
 		}
 
