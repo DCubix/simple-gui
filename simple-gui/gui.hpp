@@ -33,6 +33,7 @@ namespace gui {
 		Vertical
 	};
 
+	struct Size { int width, height; };
 	struct Rect { int x, y, width, height; };
 
 	using WID = size_t;
@@ -58,18 +59,17 @@ namespace gui {
 
 		HWND parentHandle{ nullptr };
 		HWND handle{ nullptr };
-		Rect bounds{};
 
+		Size size{};
 		int flex{ 1 };
 
-		WID parent{ 0 };
-
 		const WID& id() const { return m_id; }
+		const WID& parent() const { return m_parent; }
+		const Rect& actualBounds() const { return m_actualBounds; }
 
-		bool m_alreadyInitialized{ false };
 	protected:
 		Rect m_actualBounds;
-		WID m_id{ 0 };
+		WID m_id{ 0 }, m_parent{ 0 };
 	};
 
 	using WidgetMap = std::unordered_map<size_t, std::unique_ptr<Widget>>;
@@ -89,7 +89,7 @@ namespace gui {
 				L"STATIC",
 				text.c_str(),
 				WS_VISIBLE | WS_CHILD,
-				bounds.x, bounds.y, bounds.width, bounds.height,
+				0, 0, size.width, size.height,
 				parentHandle,
 				(HMENU)m_id,
 				(HINSTANCE) GetWindowLongPtr(parentHandle, GWLP_HINSTANCE),
@@ -142,7 +142,7 @@ namespace gui {
 				L"BUTTON",
 				text.c_str(),
 				WS_VISIBLE | WS_CHILD | WS_TABSTOP | BS_DEFPUSHBUTTON,
-				bounds.x, bounds.y, bounds.width, bounds.height,
+				0, 0, size.width, size.height,
 				parentHandle,
 				(HMENU)m_id,
 				(HINSTANCE)GetWindowLongPtr(parentHandle, GWLP_HINSTANCE),
@@ -188,7 +188,7 @@ namespace gui {
 				L"STATIC",
 				nullptr,
 				WS_VISIBLE | WS_CHILD,
-				bounds.x, bounds.y, bounds.width, bounds.height,
+				0, 0, size.width, size.height,
 				parentHandle,
 				(HMENU)-1,
 				(HINSTANCE)GetWindowLongPtr(parentHandle, GWLP_HINSTANCE),
@@ -201,7 +201,7 @@ namespace gui {
 				L"EDIT",
 				text.c_str(),
 				WS_VISIBLE | WS_CHILD | WS_BORDER,
-				bounds.x, bounds.y, bounds.width, bounds.height,
+				0, 0, size.width, size.height,
 				m_wrapper,
 				(HMENU)m_id,
 				(HINSTANCE)GetWindowLongPtr(parentHandle, GWLP_HINSTANCE),
@@ -290,14 +290,14 @@ namespace gui {
 	class Container : public Widget {
 	public:
 		Container() = default;
-		Container(Rect b, Flow flow = Flow::Horizontal) { bounds = b; this->flow = flow; }
+		Container(Size b, Flow flow = Flow::Horizontal) { size = b; this->flow = flow; }
 
 		void create() {
 			handle = CreateWindow(
 				L"STATIC",
 				nullptr,
 				WS_VISIBLE | WS_CHILD,
-				bounds.x, bounds.y, bounds.width, bounds.height,
+				0, 0, size.width, size.height,
 				parentHandle,
 				(HMENU)m_id,
 				(HINSTANCE)GetWindowLongPtr(parentHandle, GWLP_HINSTANCE),
@@ -366,7 +366,7 @@ namespace gui {
 				Container* cont = dynamic_cast<Container*>(get(parent));
 				if (cont) {
 					cont->children.push_back(id);
-					widget->parent = parent;
+					widget->m_parent = parent;
 				}
 			}
 
@@ -386,8 +386,8 @@ namespace gui {
 
 			// Rearrange parents
 			for (auto& [id, widget] : m_widgets) {
-				if (widget->parent) {
-					widget->parentHandle = get(widget->parent)->handle;
+				if (widget->parent()) {
+					widget->parentHandle = get(widget->parent())->handle;
 					SetParent(widget->handle, widget->parentHandle);
 				}
 			}
@@ -418,8 +418,8 @@ namespace gui {
 			if (m_widgets.find(id) == m_widgets.end()) return;
 
 			Widget* wid = get(id);
-			if (wid->parent == 0) {
-				wid->m_actualBounds = wid->bounds;
+			if (wid->parent() == 0) {
+				wid->m_actualBounds = Rect{ 0, 0, wid->size.width, wid->size.height };
 			}
 
 			int totalProportions = 0;
@@ -439,7 +439,7 @@ namespace gui {
 
 			for (auto& e : cont->children) {
 				Widget* c = get(e);
-				int size = cont->flow == Flow::Horizontal ? c->bounds.width : c->bounds.height;
+				int size = cont->flow == Flow::Horizontal ? c->size.width : c->size.height;
 				if (c->flex == 0) {
 					compSize -= size;
 				}
@@ -451,8 +451,8 @@ namespace gui {
 			for (auto& e : cont->children) {
 				Widget* c = get(e);
 
-				Rect ret = c->bounds;
-				if (cont->parent) {
+				Rect ret = Rect{ 0, 0, c->size.width, c->size.height };
+				if (cont->parent()) {
 					ret.x -= pbx;
 					ret.y -= pby;
 				}
@@ -489,7 +489,6 @@ namespace gui {
 	};
 
 	static size_t WindowID = 0;
-	static ThreadPool TPool{ 20 };
 
 	constexpr int DefaultWidth = 320;
 	constexpr int DefaultHeight = 240;
@@ -551,7 +550,7 @@ namespace gui {
 
 			ShowWindow(m_hwnd, SW_SHOW);
 
-			m_manager->create<Container>(0, Rect{ 0, 0, 1, 1 });
+			m_manager->create<Container>(0, Size{ 1, 1 });
 			onCreate(*m_manager.get());
 			m_manager->createWidgets(m_hwnd);
 		}
@@ -586,8 +585,8 @@ namespace gui {
 					UINT height = HIWORD(lParam);
 					Widget* cont = man->get(BaseWidgetID);
 					if (cont) {
-						cont->bounds.width = width;
-						cont->bounds.height = height;
+						cont->size.width = width;
+						cont->size.height = height;
 						man->updateWidgets();
 
 						InvalidateRect(hwnd, nullptr, true);

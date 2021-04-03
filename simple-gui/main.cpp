@@ -13,7 +13,7 @@ public:
 		rootPane.flow = gui::Flow::Vertical;
 
 		gui::TextBox& display = man.create<gui::TextBox>(rootPane.id());
-		display.bounds.height = 40;
+		display.size.height = 40;
 		display.flex = 0;
 		display.readOnly = true;
 		display.alignment = gui::Alignment::Right;
@@ -26,7 +26,7 @@ public:
 			'.', '0', '=', L'÷'
 		};
 
-		gui::Container& funcRow = man.create<gui::Container>(rootPane.id(), gui::Rect{ 0, 0, 800, 50 }, gui::Flow::Horizontal);
+		gui::Container& funcRow = man.create<gui::Container>(rootPane.id(), gui::Size{ 800, 50 }, gui::Flow::Horizontal);
 		funcRow.flex = 0;
 		funcRow.border = 0;
 
@@ -54,7 +54,7 @@ public:
 		}
 
 		for (int i = 0; i < 4; i++) {
-			gui::Container& row = man.create<gui::Container>(rootPane.id(), gui::Rect{ 0, 0, 800, 50 }, gui::Flow::Horizontal);
+			gui::Container& row = man.create<gui::Container>(rootPane.id(), gui::Size{ 800, 50 }, gui::Flow::Horizontal);
 			row.flex = 0;
 			row.border = 0;
 			for (int j = 0; j < 4; j++) {
