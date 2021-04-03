@@ -1044,6 +1044,7 @@ namespace gui {
 	struct Rect { int x, y, width, height; };
 
 	using WID = size_t;
+	constexpr WID BaseWidgetID = 1000;
 	
 	class Container;
 	class Manager;
@@ -1224,7 +1225,7 @@ namespace gui {
 						auto id = LOWORD(wParam);
 						auto cmd = HIWORD(wParam);
 
-						if (id < 1000) break;
+						if (id < BaseWidgetID) break;
 
 						switch (cmd) {
 							case EN_CHANGE: {
@@ -1319,7 +1320,7 @@ namespace gui {
 				case WM_COMMAND: {
 					auto id = LOWORD(wParam);
 
-					if (id < 1000) return DefSubclassProc(hwnd, uMsg, wParam, lParam);
+					if (id < BaseWidgetID) return DefSubclassProc(hwnd, uMsg, wParam, lParam);
 					HWND widgetHnd = GetDlgItem(hwnd, id);
 					if (!widgetHnd) return DefSubclassProc(hwnd, uMsg, wParam, lParam);
 
@@ -1403,7 +1404,7 @@ namespace gui {
 		}
 
 		void updateWidgets() {
-			performContainerLayout(1000);
+			performContainerLayout(BaseWidgetID);
 			for (auto& [id, widget] : m_widgets) {
 				widget->update();
 			}
@@ -1418,7 +1419,7 @@ namespace gui {
 		}
 
 	private:
-		size_t m_genID{ 1000 };
+		size_t m_genID{ BaseWidgetID };
 		WidgetMap m_widgets;
 
 		void performContainerLayout(WID id) {
@@ -1558,9 +1559,12 @@ namespace gui {
 
 			ShowWindow(m_hwnd, SW_SHOW);
 
+			m_manager->create<Container>(0, Rect{ 0, 0, 1, 1 });
 			onCreate(*m_manager.get());
 			m_manager->createWidgets(m_hwnd);
 		}
+
+		Container& root() { return *((Container*) m_manager->get(BaseWidgetID)); }
 
 		static void mainLoop() {
 			MSG msg = {};
@@ -1588,7 +1592,7 @@ namespace gui {
 					Manager* man = (Manager*)GetWindowLongPtr(hwnd, GWLP_USERDATA);
 					UINT width = LOWORD(lParam);
 					UINT height = HIWORD(lParam);
-					Widget* cont = man->get(1000);
+					Widget* cont = man->get(BaseWidgetID);
 					if (cont) {
 						cont->bounds.width = width;
 						cont->bounds.height = height;

@@ -9,9 +9,10 @@ public:
 	void onCreate(gui::Manager& man) override {
 		setTitle(L"Calculator");
 
-		gui::Container& panel = man.create<gui::Container>(0, gui::Rect{ 0, 0, 800, 40 }, gui::Flow::Vertical);
+		gui::Container& rootPane = root();
+		rootPane.flow = gui::Flow::Vertical;
 
-		gui::TextBox& display = man.create<gui::TextBox>(panel.id());
+		gui::TextBox& display = man.create<gui::TextBox>(rootPane.id());
 		display.bounds.height = 40;
 		display.flex = 0;
 		display.readOnly = true;
@@ -25,7 +26,7 @@ public:
 			'.', '0', '=', L'÷'
 		};
 
-		gui::Container& funcRow = man.create<gui::Container>(panel.id(), gui::Rect{ 0, 0, 800, 50 }, gui::Flow::Horizontal);
+		gui::Container& funcRow = man.create<gui::Container>(rootPane.id(), gui::Rect{ 0, 0, 800, 50 }, gui::Flow::Horizontal);
 		funcRow.flex = 0;
 		funcRow.border = 0;
 
@@ -53,7 +54,7 @@ public:
 		}
 
 		for (int i = 0; i < 4; i++) {
-			gui::Container& row = man.create<gui::Container>(panel.id(), gui::Rect{ 0, 0, 800, 50 }, gui::Flow::Horizontal);
+			gui::Container& row = man.create<gui::Container>(rootPane.id(), gui::Rect{ 0, 0, 800, 50 }, gui::Flow::Horizontal);
 			row.flex = 0;
 			row.border = 0;
 			for (int j = 0; j < 4; j++) {
@@ -117,7 +118,7 @@ public:
 			}
 		}
 
-		man.create<gui::Text>(panel.id(), L"Made by Diego");
+		man.create<gui::Text>(rootPane.id(), L"Made by Diego");
 
 		resize(300, 355);
 	}
