@@ -2,3 +2,5 @@
 [Dd]ebug
 [Rr]elease
 *.exe
+x86/
+x64/
