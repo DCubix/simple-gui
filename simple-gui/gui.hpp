@@ -80,9 +80,9 @@ namespace gui {
 		Right
 	};
 
-	class Text : public Widget {
+	class Label : public Widget {
 	public:
-		Text(const std::wstring& text = L"") : text(text) { }
+		Label(const std::wstring& text = L"") : text(text) { }
 
 		void create() {
 			handle = CreateWindow(

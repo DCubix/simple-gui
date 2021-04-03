@@ -118,7 +118,7 @@ public:
 			}
 		}
 
-		man.create<gui::Text>(rootPane.id(), L"Made by Diego");
+		man.create<gui::Label>(rootPane.id(), L"Made by Diego");
 
 		resize(300, 355);
 	}
