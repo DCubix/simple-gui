@@ -9,6 +9,7 @@
 
 #include <string>
 #include <vector>
+#include <array>
 #include <unordered_map>
 #include <memory>
 #include <functional>
@@ -37,19 +38,155 @@
 
 namespace gui {
 
+#ifdef _WIN32
+	using String = std::basic_string<TCHAR>;
+#endif
+
 	enum class Flow {
 		Horizontal = 0,
 		Vertical
 	};
 
+	enum class Alignment {
+		Left = 0,
+		Center,
+		Right
+	};
+
 	struct Size { int width, height; };
 	struct Rect { int x, y, width, height; };
+	struct Font { int size; String family; };
 
 	using WID = size_t;
-	using String = std::basic_string<TCHAR>;
 
 	constexpr WID BaseWidgetID = 1000;
 	
+	namespace platform {
+
+		enum class NotificationType {
+			SetText = 0,
+			SetFont,
+			SetTextAlignment,
+			SetPositionAndSize,
+			SetReadOnly,
+			SetMultiline,
+			SetPassword
+		};
+
+		using Notification = std::variant<String, Font, Alignment, Rect, bool>;
+
+		template <typename HandleType, typename WindowParams>
+		class PlatformBase {
+		public:
+			virtual void notify(HandleType handle, NotificationType type, Notification notif) = 0;
+			virtual HandleType createWindow(int id, Size size, WindowParams params, void* userdata) = 0;
+		};
+
+#ifdef _WIN32
+		struct Win32WindowParams {
+			String className{}, text{};
+			HWND parent;
+			LONG_PTR style;
+		};
+
+		static std::unordered_map<String, std::array<LONG_PTR, 3>> AlignmentTranslationMap = {
+			{ L"STATIC", { SS_LEFT, SS_CENTER, SS_RIGHT }},
+			{ L"EDIT", { ES_LEFT, ES_CENTER, ES_RIGHT }},
+			{ L"BUTTON", { BS_LEFT, BS_CENTER, BS_RIGHT }}
+		};
+
+		class PlatformWin32 : public PlatformBase<HWND, Win32WindowParams> {
+		public:
+			void notify(HWND handle, NotificationType type, Notification notif) {
+				switch (type) {
+					case NotificationType::SetText: SetWindowText(handle, std::get<String>(notif).c_str()); break;
+					case NotificationType::SetTextAlignment: {
+						String buf;
+						buf.resize(128);
+						GetClassName(handle, buf.data(), buf.size());
+
+						LONG_PTR style = GetWindowLongPtr(handle, GWL_STYLE);
+						auto aligns = AlignmentTranslationMap[buf];
+
+						SetWindowLongPtr(handle, GWL_STYLE, style | aligns[int(std::get<Alignment>(notif))]);
+					} break;
+					case NotificationType::SetFont: {
+						Font fnt = std::get<Font>(notif);
+						HFONT font = CreateFont(
+							fnt.size, 0, 0, 0, FW_DONTCARE,
+							FALSE, FALSE, FALSE,
+							ANSI_CHARSET,
+							OUT_DEFAULT_PRECIS,
+							CLIP_DEFAULT_PRECIS,
+							DEFAULT_QUALITY,
+							DEFAULT_PITCH | FF_SWISS,
+							fnt.family.c_str()
+						);
+						SendMessage(handle, WM_SETFONT, WPARAM(font), TRUE);
+					} break;
+					case NotificationType::SetPositionAndSize: {
+						Rect bounds = std::get<Rect>(notif);
+						SetWindowPos(handle, nullptr, bounds.x, bounds.y, bounds.width, bounds.height, 0);
+					} break;
+					case NotificationType::SetReadOnly: {
+						bool val = std::get<bool>(notif);
+						LONG_PTR style = GetWindowLongPtr(handle, GWL_STYLE);
+						if (val) style |= ES_READONLY;
+						else {
+							if (style & ES_READONLY > 0)
+								style &= ~ES_READONLY;
+						}
+						SetWindowLongPtr(handle, GWL_STYLE, style);
+						SendMessage(handle, EM_SETREADONLY, WPARAM(std::get<bool>(notif)), 0);
+					} break;
+					case NotificationType::SetMultiline: {
+						bool val = std::get<bool>(notif);
+						LONG_PTR style = GetWindowLongPtr(handle, GWL_STYLE);
+						if (val) style |= ES_MULTILINE;
+						else {
+							if (style & ES_MULTILINE > 0)
+								style &= ~ES_MULTILINE;
+						}
+						SetWindowLongPtr(handle, GWL_STYLE, style);
+					} break;
+					case NotificationType::SetPassword: {
+						bool val = std::get<bool>(notif);
+						LONG_PTR style = GetWindowLongPtr(handle, GWL_STYLE);
+						if (val) style |= ES_PASSWORD;
+						else {
+							if (style & ES_PASSWORD > 0)
+								style &= ~ES_PASSWORD;
+						}
+						SetWindowLongPtr(handle, GWL_STYLE, style);
+					} break;
+				}
+			}
+
+			HWND createWindow(int id, Size size, Win32WindowParams params, void* userdata) {
+				HWND handle = CreateWindow(
+					params.className.c_str(),
+					params.text.c_str(),
+					params.style,
+					0, 0, size.width, size.height,
+					params.parent,
+					(HMENU)id,
+					(HINSTANCE)GetWindowLongPtr(params.parent, GWLP_HINSTANCE),
+					nullptr
+				);
+				if (userdata) SetWindowLongPtr(handle, GWLP_USERDATA, (LONG_PTR)userdata);
+				return handle;
+			}
+		};
+
+		static PlatformWin32 Platform{};
+
+		using Handle = HWND;
+#endif
+
+	};
+
+	using namespace platform;
+
 	class Container;
 	class Manager;
 	class Widget {
@@ -60,16 +197,13 @@ namespace gui {
 			DestroyWindow(handle);
 		}
 
-		virtual void create() = 0;
-		virtual void updateAttributes() {};
+		virtual void create(Handle parent) = 0;
 
-		void update() {
-			SetWindowPos(handle, nullptr, m_actualBounds.x, m_actualBounds.y, m_actualBounds.width, m_actualBounds.height, 0);
-			updateAttributes();
+		virtual void update() {
+			Platform.notify(handle, NotificationType::SetPositionAndSize, m_actualBounds);
 		}
 
-		HWND parentHandle{ nullptr };
-		HWND handle{ nullptr };
+		Handle handle{ nullptr };
 
 		Size size{};
 		int flex{ 1 };
@@ -78,111 +212,79 @@ namespace gui {
 		const WID& parent() const { return m_parent; }
 		const Rect& actualBounds() const { return m_actualBounds; }
 
+		const String& text() const { return m_text; }
+		void text(const String& tx) {
+			m_text = tx;
+			Platform.notify(handle, NotificationType::SetText, tx);
+		}
+
+		const Alignment& textAlignment() const { return m_textAlignment; }
+		void textAlignment(const Alignment& tx) {
+			m_textAlignment = tx;
+			Platform.notify(handle, NotificationType::SetTextAlignment, tx);
+		}
+
+		const String& fontFamily() const { return m_fontFamily; }
+		void fontFamily(const String& tx) {
+			m_fontFamily = tx;
+			Platform.notify(handle, NotificationType::SetFont, Font{ .size = m_fontSize, .family = tx });
+		}
+
+		int fontSize() const { return m_fontSize; }
+		void fontSize(int tx) {
+			m_fontSize = tx;
+			Platform.notify(handle, NotificationType::SetFont, Font{ .size = tx, .family = m_fontFamily });
+		}
+
 	protected:
 		Rect m_actualBounds;
 		WID m_id{ 0 }, m_parent{ 0 };
+
+		String m_text{ L"Text" };
+		Alignment m_textAlignment{ Alignment::Center };
+		String m_fontFamily{ L"Segoe UI" };
+		int m_fontSize{ 16 };
 	};
 
 	using WidgetMap = std::unordered_map<size_t, std::unique_ptr<Widget>>;
 
-	enum class Alignment {
-		Left = 0,
-		Center,
-		Right
-	};
-
 	class Label : public Widget {
 	public:
-		Label(const String& text = L"") : text(text) { }
+		Label(const String& text = L"") { this->text(text); }
 
-		void create() {
-			handle = CreateWindow(
-				L"STATIC",
-				text.c_str(),
-				WS_VISIBLE | WS_CHILD,
-				0, 0, size.width, size.height,
-				parentHandle,
-				(HMENU)m_id,
-				(HINSTANCE) GetWindowLongPtr(parentHandle, GWLP_HINSTANCE),
-				nullptr
-			);
-			SetWindowLongPtr(handle, GWLP_USERDATA, (LONG_PTR)this);
+		void create(Handle parent) {
+#ifdef _WIN32
+			Win32WindowParams params = {};
+			params.className = L"STATIC";
+			params.parent = parent;
+			params.style = WS_VISIBLE | WS_CHILD;
+			params.text = m_text;
+#endif
+
+			handle = Platform.createWindow(m_id, size, params, (void*)this);
 		}
 
-		void updateAttributes() {
-			LONG_PTR align = SS_LEFT;
-			switch (alignment) {
-				case Alignment::Left: break;
-				case Alignment::Center: align = SS_CENTER; break;
-				case Alignment::Right: align = SS_RIGHT; break;
-			}
-
-			LONG_PTR style = GetWindowLongPtr(handle, GWL_STYLE);
-			SetWindowLongPtr(handle, GWL_STYLE, style | align);
-
-			SetWindowText(handle, text.c_str());
-
-			m_font = CreateFont(
-				fontSize, 0, 0, 0, FW_DONTCARE,
-				FALSE, FALSE, FALSE,
-				ANSI_CHARSET,
-				OUT_DEFAULT_PRECIS,
-				CLIP_DEFAULT_PRECIS,
-				DEFAULT_QUALITY,
-				DEFAULT_PITCH | FF_SWISS,
-				fontFamily.c_str()
-			);
-			SendMessage(handle, WM_SETFONT, WPARAM(m_font), TRUE);
-		}
-
-		Alignment alignment{ Alignment::Center };
-		String text{ L"Text" };
-
-		String fontFamily{ L"Segoe UI" };
-		int fontSize{ 16 };
 	private:
 		HFONT m_font{ nullptr };
 	};
 
 	class Button : public Widget {
 	public:
-		Button(const String& text = L"") : text(text) {}
+		Button(const String& text = L"") { this->text(text); }
 
-		void create() {
-			handle = CreateWindow(
-				L"BUTTON",
-				text.c_str(),
-				WS_VISIBLE | WS_CHILD | WS_TABSTOP | BS_DEFPUSHBUTTON,
-				0, 0, size.width, size.height,
-				parentHandle,
-				(HMENU)m_id,
-				(HINSTANCE)GetWindowLongPtr(parentHandle, GWLP_HINSTANCE),
-				nullptr
-			);
-			SetWindowLongPtr(handle, GWLP_USERDATA, (LONG_PTR)this);
+		void create(Handle parent) {
+#ifdef _WIN32
+			Win32WindowParams params = {};
+			params.className = L"BUTTON";
+			params.parent = parent;
+			params.style = WS_VISIBLE | WS_CHILD | WS_TABSTOP | BS_DEFPUSHBUTTON;
+			params.text = m_text;
+#endif
+
+			handle = Platform.createWindow(m_id, size, params, (void*)this);
 		}
 
-		void updateAttributes() {
-			SetWindowText(handle, text.c_str());
-
-			m_font = CreateFont(
-				fontSize, 0, 0, 0, FW_DONTCARE,
-				FALSE, FALSE, FALSE,
-				ANSI_CHARSET,
-				OUT_DEFAULT_PRECIS,
-				CLIP_DEFAULT_PRECIS,
-				DEFAULT_QUALITY,
-				DEFAULT_PITCH | FF_SWISS,
-				fontFamily.c_str()
-			);
-			SendMessage(handle, WM_SETFONT, WPARAM(m_font), TRUE);
-		}
-
-		String text{ L"Button" };
 		std::function<void()> onPressed;
-
-		String fontFamily{ L"Segoe UI" };
-		int fontSize{ 16 };
 	private:
 		HFONT m_font{ nullptr };
 	};
@@ -195,33 +297,31 @@ namespace gui {
 			DestroyWindow(m_wrapper);
 		}
 
-		void create() {
-			m_wrapper = CreateWindow(
-				L"STATIC",
-				nullptr,
-				WS_VISIBLE | WS_CHILD,
-				0, 0, size.width, size.height,
-				parentHandle,
-				(HMENU)-1,
-				(HINSTANCE)GetWindowLongPtr(parentHandle, GWLP_HINSTANCE),
-				nullptr
-			);
-			SetWindowLongPtr(m_wrapper, GWLP_USERDATA, (LONG_PTR)this);
-			SetWindowSubclass(m_wrapper, TextBox::WndProc, 0, 0);
+		void create(Handle parent) {
+#ifdef _WIN32
+			// Due to a bug in the Windows API, the EDIT control does not update its parent when
+			// SetParent is called, so we have to wrap it around a dummy window for it to
+			// receive events.
+			Win32WindowParams params = {};
+			params.className = L"STATIC";
+			params.parent = parent;
+			params.style = WS_VISIBLE | WS_CHILD;
 
-			handle = CreateWindow(
-				L"EDIT",
-				text.c_str(),
-				WS_VISIBLE | WS_CHILD | WS_BORDER,
-				0, 0, size.width, size.height,
-				m_wrapper,
-				(HMENU)m_id,
-				(HINSTANCE)GetWindowLongPtr(parentHandle, GWLP_HINSTANCE),
-				nullptr
-			);
-			SetWindowLongPtr(handle, GWLP_USERDATA, (LONG_PTR)this);
+			m_wrapper = Platform.createWindow(-1, size, params, (void*)this);
+			SetWindowSubclass(m_wrapper, TextBox::WndProc, 0, 0);
+#endif
+
+#ifdef _WIN32
+			Win32WindowParams eps = {};
+			eps.className = L"EDIT";
+			eps.parent = m_wrapper;
+			eps.style = WS_VISIBLE | WS_CHILD | WS_BORDER;
+			eps.text = m_text;
+#endif
+			handle = Platform.createWindow(m_id, size, eps, (void*)this);
 		}
 
+#ifdef _WIN32
 		static LRESULT CALLBACK WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam, UINT_PTR, DWORD_PTR) {
 			switch (uMsg) {
 				case WM_COMMAND: {
@@ -238,9 +338,8 @@ namespace gui {
 								gui::Widget* widget = (gui::Widget*)GetWindowLongPtr(widgetHnd, GWLP_USERDATA);
 								gui::TextBox* tb = static_cast<gui::TextBox*>(widget);
 								if (id == tb->id()) {
-									wchar_t buf[1024];
-									GetWindowText(widgetHnd, buf, 1024);
-									tb->text = String(buf);
+									tb->m_text.resize(Edit_GetTextLength(widgetHnd));
+									GetWindowText(widgetHnd, tb->m_text.data(), tb->m_text.size());
 								}
 							} break;
 						}
@@ -250,69 +349,47 @@ namespace gui {
 			}
 			return DefSubclassProc(hwnd, uMsg, wParam, lParam);
 		}
+#endif
 
-		void updateAttributes() {
-			SetWindowPos(m_wrapper, nullptr, m_actualBounds.x, m_actualBounds.y, m_actualBounds.width, m_actualBounds.height, 0);
-
-			LONG_PTR align = ES_LEFT;
-			switch (alignment) {
-				case Alignment::Left: break;
-				case Alignment::Center: align = ES_CENTER; break;
-				case Alignment::Right: align = ES_RIGHT; break;
-			}
-
-			LONG_PTR style = GetWindowLongPtr(handle, GWL_STYLE);
-
-			if (multiLine) style |= ES_MULTILINE;
-			if (password) style |= ES_PASSWORD;
-			if (readOnly) {
-				style |= ES_READONLY;
-				SendMessage(handle, EM_SETREADONLY, TRUE, 0);
-			}
-			style |= align;
-
-			SetWindowLongPtr(handle, GWL_STYLE, style);
-			SetWindowText(handle, text.c_str());
-
-			m_font = CreateFont(
-				fontSize, 0, 0, 0, FW_DONTCARE,
-				FALSE, FALSE, FALSE,
-				ANSI_CHARSET,
-				OUT_DEFAULT_PRECIS,
-				CLIP_DEFAULT_PRECIS,
-				DEFAULT_QUALITY,
-				DEFAULT_PITCH | FF_SWISS,
-				fontFamily.c_str()
-			);
-			SendMessage(handle, WM_SETFONT, WPARAM(m_font), TRUE);
+		bool multiLine() const { return m_multiLine; }
+		void multiLine(bool v) {
+			m_multiLine = v;
+			Platform.notify(handle, NotificationType::SetMultiline, v);
 		}
 
-		bool multiLine{ false }, password{ false }, readOnly{ false };
-		Alignment alignment{ Alignment::Left };
-		String text{ L"" };
-		
-		String fontFamily{ L"Segoe UI" };
-		int fontSize{ 16 };
+		bool password() const { return m_password; }
+		void password(bool v) {
+			m_password = v;
+			Platform.notify(handle, NotificationType::SetPassword, v);
+		}
+
+		bool readOnly() const { return m_readOnly; }
+		void readOnly(bool v) {
+			m_readOnly = v;
+			Platform.notify(handle, NotificationType::SetReadOnly, v);
+		}
 
 	private:
+		bool m_multiLine{ false }, m_password{ false }, m_readOnly{ false };
 		HFONT m_font{ nullptr };
+
+#ifdef _WIN32
 		HWND m_wrapper;
+#endif
 	};
 
 	class Spacer : public Widget {
 	public:
 		Spacer() = default;
-		void create() {
-			handle = CreateWindow(
-				L"STATIC",
-				nullptr,
-				WS_CHILD,
-				0, 0, 1, 1,
-				parentHandle,
-				(HMENU)m_id,
-				(HINSTANCE)GetWindowLongPtr(parentHandle, GWLP_HINSTANCE),
-				nullptr
-			);
+		void create(Handle parent) {
+#ifdef _WIN32
+			Win32WindowParams params = {};
+			params.className = L"STATIC";
+			params.parent = parent;
+			params.style = WS_CHILD;
+#endif
+
+			handle = Platform.createWindow(m_id, Size{ 1, 1 }, params, (void*)this);
 		}
 	};
 
@@ -337,39 +414,35 @@ namespace gui {
 			DestroyWindow(m_wrapper);
 		}
 
-		void create() {
-			m_wrapper = CreateWindow(
-				L"STATIC",
-				nullptr,
-				WS_VISIBLE | WS_CHILD,
-				0, 0, size.width, size.height,
-				parentHandle,
-				(HMENU)-1,
-				(HINSTANCE)GetWindowLongPtr(parentHandle, GWLP_HINSTANCE),
-				nullptr
-			);
-			SetWindowLongPtr(m_wrapper, GWLP_USERDATA, (LONG_PTR)this);
-			SetWindowSubclass(m_wrapper, ListBox::WndProc, 0, 0);
+		void create(Handle parent) {
+#ifdef _WIN32
+			// Due to a bug in the Windows API, the EDIT control does not update its parent when
+			// SetParent is called, so we have to wrap it around a dummy window for it to
+			// receive events.
+			Win32WindowParams params = {};
+			params.className = L"STATIC";
+			params.parent = parent;
+			params.style = WS_VISIBLE | WS_CHILD;
 
-			handle = CreateWindowEx(
-				WS_EX_CLIENTEDGE,
-				L"LISTBOX",
-				nullptr,
-				WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_AUTOVSCROLL | LBS_NOTIFY,
-				0, 0, size.width, size.height,
-				m_wrapper,
-				(HMENU)m_id,
-				(HINSTANCE)GetWindowLongPtr(parentHandle, GWLP_HINSTANCE),
-				nullptr
-			);
-			SetWindowLongPtr(handle, GWLP_USERDATA, (LONG_PTR)this);
+			m_wrapper = Platform.createWindow(-1, size, params, (void*)this);
+			SetWindowSubclass(m_wrapper, ListBox::WndProc, 0, 0);
+#endif
+
+#ifdef _WIN32
+			Win32WindowParams eps = {};
+			eps.className = L"LISTBOX";
+			eps.parent = m_wrapper;
+			eps.style = WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_AUTOVSCROLL | LBS_NOTIFY;
+#endif
+			handle = Platform.createWindow(m_id, size, eps, (void*)this);
 
 			for (int i = 0; i < m_items.size(); i++) {
-				winapiAdd(i);
+				platformAdd(i);
 			}
-			SendMessage(handle, LB_SETCURSEL, m_tempSelected, 0);
+			select(m_tempSelected);
 		}
 
+#ifdef _WIN32
 		static LRESULT CALLBACK WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam, UINT_PTR, DWORD_PTR) {
 			switch (uMsg) {
 				case WM_COMMAND: {
@@ -382,7 +455,7 @@ namespace gui {
 					switch (cmd) {
 						case LBN_SELCHANGE: {
 							ListBox* lst = (ListBox*)GetWindowLongPtr(lbox, GWLP_USERDATA);
-							int idx = SendMessage(lbox, LB_GETCURSEL, 0, 0);
+							int idx = ListBox_GetCurSel(lbox);
 							if (lst->onSelected) lst->onSelected(idx, lst->get(idx));
 						} break;
 					}
@@ -391,20 +464,26 @@ namespace gui {
 			}
 			return DefSubclassProc(hwnd, uMsg, wParam, lParam);
 		}
+#endif
 
-		void updateAttributes() {
-			SetWindowPos(m_wrapper, nullptr, m_actualBounds.x, m_actualBounds.y, m_actualBounds.width, m_actualBounds.height, 0);
+		void update() override {
+			Widget::update();
+#ifdef _WIN32
+			Platform.notify(m_wrapper, NotificationType::SetPositionAndSize, m_actualBounds);
+#endif
 		}
 
 		void add(ListItem* item) {
 			m_items.push_back(std::unique_ptr<ListItem>(item));
-			if (handle) winapiAdd(m_items.size() - 1);
+			if (handle) platformAdd(m_items.size() - 1);
 		}
 
 		void remove(int idx) {
 			m_items.erase(m_items.begin() + idx);
 			if (handle) {
-				SendMessage(handle, LB_DELETESTRING, WPARAM(idx), 0);
+#ifdef _WIN32
+				ListBox_DeleteString(handle, idx);
+#endif
 			}
 		}
 
@@ -412,10 +491,12 @@ namespace gui {
 			std::vector<int> sels;
 			if (!handle) return sels;
 			
-			LRESULT len = SendMessage(handle, LB_GETSELCOUNT, 0, 0);
+#ifdef _WIN32
+			LRESULT len = ListBox_GetSelCount(handle);
 			sels.resize(len);
 
-			SendMessage(handle, LB_GETSELITEMS, len, LPARAM(sels.data()));
+			ListBox_GetSelItems(handle, len, sels.data());
+#endif
 			return sels;
 		}
 
@@ -426,13 +507,22 @@ namespace gui {
 		ListItem* get(int id) {
 			if (id < 0) return nullptr;
 			if (!handle) return m_items[id].get();
-			int dataID = SendMessage(handle, LB_GETITEMDATA, WPARAM(id), 0);
-			return m_items[dataID].get();
+
+			ListItem* ret = nullptr;
+#ifdef _WIN32
+			int dataID = ListBox_GetItemData(handle, id);
+			ret = m_items[dataID].get();
+#endif
+			return ret;
 		}
 
 		void select(int id) {
 			if (!handle) m_tempSelected = id;
-			else SendMessage(handle, LB_SETCURSEL, id, 0);
+			else {
+#ifdef _WIN32
+				ListBox_SetCurSel(handle, id);
+#endif
+			}
 		}
 
 		std::function<void(int, ListItem*)> onSelected;
@@ -442,10 +532,12 @@ namespace gui {
 		std::vector<std::unique_ptr<ListItem>> m_items;
 		int m_tempSelected{ -1 };
 
-		void winapiAdd(int item) {
+		void platformAdd(int item) {
 			ListItem* it = m_items[item].get();
-			int pos = SendMessage(handle, LB_ADDSTRING, 0, (LPARAM)it->toString().c_str());
-			SendMessage(handle, LB_SETITEMDATA, pos, LPARAM(item));
+#ifdef _WIN32
+			int pos = ListBox_AddString(handle, (LPARAM)it->toString().c_str());
+			ListBox_SetItemData(handle, pos, LPARAM(item));
+#endif
 		}
 
 	};
@@ -459,36 +551,32 @@ namespace gui {
 			DestroyWindow(m_wrapper);
 		}
 
-		void create() {
-			m_wrapper = CreateWindow(
-				L"STATIC",
-				nullptr,
-				WS_VISIBLE | WS_CHILD,
-				0, 0, size.width, size.height,
-				parentHandle,
-				(HMENU)-1,
-				(HINSTANCE)GetWindowLongPtr(parentHandle, GWLP_HINSTANCE),
-				nullptr
-			);
-			SetWindowLongPtr(m_wrapper, GWLP_USERDATA, (LONG_PTR)this);
-			SetWindowSubclass(m_wrapper, ComboBox::WndProc, 0, 0);
+		void create(Handle parent) {
+#ifdef _WIN32
+			// Due to a bug in the Windows API, the EDIT control does not update its parent when
+			// SetParent is called, so we have to wrap it around a dummy window for it to
+			// receive events.
+			Win32WindowParams params = {};
+			params.className = WC_STATIC;
+			params.parent = parent;
+			params.style = WS_VISIBLE | WS_CHILD;
 
-			handle = CreateWindow(
-				WC_COMBOBOX,
-				L"",
-				WS_CHILD | WS_OVERLAPPED | WS_VISIBLE | CBS_HASSTRINGS | CBS_DROPDOWNLIST,
-				0, 0, size.width, size.height,
-				m_wrapper,
-				(HMENU)m_id,
-				(HINSTANCE)GetWindowLongPtr(parentHandle, GWLP_HINSTANCE),
-				nullptr
-			);
-			SetWindowLongPtr(handle, GWLP_USERDATA, (LONG_PTR)this);
+			m_wrapper = Platform.createWindow(-1, size, params, (void*)this);
+			SetWindowSubclass(m_wrapper, ComboBox::WndProc, 0, 0);
+#endif
+
+#ifdef _WIN32
+			Win32WindowParams eps = {};
+			eps.className = WC_COMBOBOX;
+			eps.parent = m_wrapper;
+			eps.style = WS_CHILD | WS_OVERLAPPED | WS_VISIBLE | CBS_HASSTRINGS | CBS_DROPDOWNLIST;
+#endif
+			handle = Platform.createWindow(m_id, size, eps, (void*)this);
 
 			for (int i = 0; i < m_items.size(); i++) {
-				winapiAdd(i);
+				platformAdd(i);
 			}
-			SendMessage(handle, CB_SETCURSEL, m_tempSelected, 0);
+			select(m_tempSelected);
 		}
 
 		static LRESULT CALLBACK WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam, UINT_PTR, DWORD_PTR) {
@@ -519,19 +607,25 @@ namespace gui {
 
 		void add(ListItem* item) {
 			m_items.push_back(std::unique_ptr<ListItem>(item));
-			if (handle) winapiAdd(m_items.size() - 1);
+			if (handle) platformAdd(m_items.size() - 1);
 		}
 
 		void remove(int idx) {
 			m_items.erase(m_items.begin() + idx);
 			if (handle) {
-				SendMessage(handle, CB_DELETESTRING, WPARAM(idx), 0);
+#ifdef _WIN32
+				ComboBox_DeleteString(handle, idx);
+#endif
 			}
 		}
 
 		int selected() {
 			if (!handle) return -1;
-			return SendMessage(handle, CB_GETCURSEL, 0, 0);
+			int sel = -1;
+#ifdef _WIN32
+			sel = ComboBox_GetCurSel(handle);
+#endif
+			return sel;
 		}
 
 		const std::vector<std::unique_ptr<ListItem>>& items() {
@@ -541,13 +635,22 @@ namespace gui {
 		ListItem* get(int id) {
 			if (id < 0) return nullptr;
 			if (!handle) return m_items[id].get();
-			int dataID = SendMessage(handle, CB_GETITEMDATA, WPARAM(id), 0);
-			return m_items[dataID].get();
+
+			ListItem* ret = nullptr;
+#ifdef _WIN32
+			int dataID = ComboBox_GetItemData(handle, id);
+			ret = m_items[dataID].get();
+#endif
+			return ret;
 		}
 
 		void select(int id) {
 			if (!handle) m_tempSelected = id;
-			else SendMessage(handle, CB_SETCURSEL, id, 0);
+			else {
+#ifdef _WIN32
+				ComboBox_SetCurSel(handle, id);
+#endif
+			}
 		}
 
 		std::function<void(int, ListItem*)> onSelected;
@@ -557,14 +660,17 @@ namespace gui {
 		std::vector<std::unique_ptr<ListItem>> m_items;
 		int m_tempSelected{ -1 };
 
-		void winapiAdd(int item) {
+		void platformAdd(int item) {
 			ListItem* it = m_items[item].get();
+#ifdef _WIN32
 			int pos = ComboBox_AddString(handle, it->toString().c_str());
 			ComboBox_SetItemData(handle, pos, item);
+#endif
 		}
 
 	};
 
+#ifdef _WIN32
 #pragma region OpenGL
 
 #define WGL_CONTEXT_MAJOR_VERSION_ARB             0x2091
@@ -696,7 +802,7 @@ namespace gui {
 			Widget::~Widget();
 		}
 
-		void create() {
+		void create(Handle parent) {
 			gl::initializeGL();
 
 			WNDCLASS wc = { 0 };
@@ -711,9 +817,9 @@ namespace gui {
 				nullptr,
 				WS_VISIBLE | WS_CHILD | WS_BORDER | SS_OWNERDRAW,
 				0, 0, size.width, size.height,
-				parentHandle,
+				parent,
 				(HMENU)m_id,
-				(HINSTANCE)GetWindowLongPtr(parentHandle, GWLP_HINSTANCE),
+				(HINSTANCE)GetWindowLongPtr(parent, GWLP_HINSTANCE),
 				nullptr
 			);
 			SetWindowLongPtr(handle, GWLP_USERDATA, (LONG_PTR)this);
@@ -790,27 +896,29 @@ namespace gui {
 		HGLRC m_context;
 	};
 #pragma endregion
+#endif
 
 	class Container : public Widget {
 	public:
 		Container() = default;
 		Container(Size b, Flow flow = Flow::Horizontal) { size = b; this->flow = flow; }
 
-		void create() {
-			handle = CreateWindow(
-				L"STATIC",
-				nullptr,
-				WS_VISIBLE | WS_CHILD,
-				0, 0, size.width, size.height,
-				parentHandle,
-				(HMENU)m_id,
-				(HINSTANCE)GetWindowLongPtr(parentHandle, GWLP_HINSTANCE),
-				nullptr
-			);
-			SetWindowLongPtr(handle, GWLP_USERDATA, (LONG_PTR)this);
+		void create(Handle parent) {
+#ifdef _WIN32
+			Win32WindowParams params = {};
+			params.className = L"STATIC";
+			params.parent = parent;
+			params.style = WS_VISIBLE | WS_CHILD;
+#endif
+
+			handle = Platform.createWindow(m_id, size, params, (void*)this);
+
+#ifdef _WIN32
 			SetWindowSubclass(handle, Container::WndProc, 0, 0);
+#endif
 		}
 
+#ifdef _WIN32
 		static LRESULT CALLBACK WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam, UINT_PTR, DWORD_PTR) {
 			switch (uMsg) {
 				case WM_COMMAND: {
@@ -832,6 +940,7 @@ namespace gui {
 			}
 			return DefSubclassProc(hwnd, uMsg, wParam, lParam);
 		}
+#endif
 
 		int border{ 4 }, spacing{ 4 };
 		Flow flow{ Flow::Horizontal };
@@ -868,15 +977,13 @@ namespace gui {
 
 		void createWidgets(HWND parentWindow) {
 			for (auto& [id, widget] : m_widgets) {
-				widget->parentHandle = parentWindow;
-				widget->create();
+				widget->create(parentWindow);
 			}
 
 			// Rearrange parents
 			for (auto& [id, widget] : m_widgets) {
 				if (widget->parent()) {
-					widget->parentHandle = get(widget->parent())->handle;
-					SetParent(widget->handle, widget->parentHandle);
+					SetParent(widget->handle, get(widget->parent())->handle);
 				}
 			}
 
@@ -1117,51 +1224,9 @@ namespace gui {
 		};
 
 		static WidgetSetupMap WidgetSetups = {
-			{ L"label", [](Widget* w, WidgetPropMap props) {
-				DefaultWidgetSetup(w, props);
-				Label* lbl = static_cast<Label*>(w);
-
-				if (props.find(L"text") != props.end())
-					lbl->text = std::get<String>(props[L"text"]);
-
-				if (props.find(L"alignment") != props.end())
-					lbl->alignment = utils::parseAlignment(std::get<String>(props[L"alignment"]));
-
-				if (props.find(L"fontSize") != props.end())
-					lbl->fontSize = std::get<int>(props[L"fontSize"]);
-
-				if (props.find(L"fontFamily") != props.end())
-					lbl->fontFamily = std::get<String>(props[L"fontFamily"]);
-			}},
-			{ L"button", [](Widget* w, WidgetPropMap props) {
-				DefaultWidgetSetup(w, props);
-
-				Button* lbl = static_cast<Button*>(w);
-				if (props.find(L"text") != props.end())
-					lbl->text = std::get<String>(props[L"text"]);
-
-				if (props.find(L"fontSize") != props.end())
-					lbl->fontSize = std::get<int>(props[L"fontSize"]);
-
-				if (props.find(L"fontFamily") != props.end())
-					lbl->fontFamily = std::get<String>(props[L"fontFamily"]);
-			}},
-			{ L"textbox", [](Widget* w, WidgetPropMap props) {
-				DefaultWidgetSetup(w, props);
-
-				TextBox* lbl = static_cast<TextBox*>(w);
-				if (props.find(L"text") != props.end())
-					lbl->text = std::get<String>(props[L"text"]);
-
-				if (props.find(L"alignment") != props.end())
-					lbl->alignment = utils::parseAlignment(std::get<String>(props[L"alignment"]));
-
-				if (props.find(L"fontSize") != props.end())
-					lbl->fontSize = std::get<int>(props[L"fontSize"]);
-
-				if (props.find(L"fontFamily") != props.end())
-					lbl->fontFamily = std::get<String>(props[L"fontFamily"]);
-			}},
+			{ L"label", DefaultWidgetSetup },
+			{ L"button", DefaultWidgetSetup },
+			{ L"textbox", DefaultWidgetSetup },
 			{ L"spacer", DefaultWidgetSetup },
 			{ L"listbox", DefaultWidgetSetup },
 			{ L"combobox", DefaultWidgetSetup },
@@ -1282,6 +1347,7 @@ namespace gui {
 		virtual void onCreate(Manager&) {}
 
 		void show() {
+#ifdef _WIN32
 			WNDCLASSEX cex = {};
 
 			HINSTANCE instance = GetModuleHandle(nullptr);
@@ -1331,18 +1397,22 @@ namespace gui {
 			onCreate(*m_manager.get());
 
 			ShowWindow(m_hwnd, SW_SHOW);
+#endif
 		}
 
 		Container& root() { return *((Container*) m_manager->get(BaseWidgetID)); }
 
 		static void mainLoop() {
+#ifdef _WIN32
 			MSG msg = {};
 			while (GetMessage(&msg, nullptr, 0, 0) > 0) {
 				TranslateMessage(&msg);
 				DispatchMessage(&msg);
 			}
+#endif
 		}
 
+#ifdef _WIN32
 		static LRESULT CALLBACK WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
 			switch (uMsg) {
 				case WM_CLOSE: DestroyWindow(hwnd); break;
@@ -1382,8 +1452,10 @@ namespace gui {
 			}
 			return DefWindowProc(hwnd, uMsg, wParam, lParam);
 		}
+#endif
 
-		void resize(int width, int height) {	
+		void resize(int width, int height) {
+#ifdef _WIN32
 			RECT wect;
 			GetWindowRect(m_hwnd, &wect);
 
@@ -1396,10 +1468,13 @@ namespace gui {
 			nect.bottom = wect.top + height;
 
 			AdjustWindowRectEx(&nect, WS_OVERLAPPEDWINDOW, 0, 0);
+#endif
 		}
 
 		void setTitle(const String& title) {
+#ifdef _WIN32
 			SetWindowText(m_hwnd, title.c_str());
+#endif
 		}
 
 		void loadMarkup(const String& text) {
@@ -1408,7 +1483,7 @@ namespace gui {
 		}
 
 	private:
-		HWND m_hwnd;
+		Handle m_hwnd;
 		std::unique_ptr<Manager> m_manager;
 	};
 
