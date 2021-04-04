@@ -1,11 +1,27 @@
 #ifndef GUI_HPP
 #define GUI_HPP
 
+#ifdef _WIN32
 #include <Windows.h>
 #include <windowsx.h>
 
+#include <gl/GL.h>
+#pragma comment (lib, "opengl32.lib")
+
 #include <CommCtrl.h>
 #pragma comment(lib, "Comctl32.lib")
+
+#include <Richedit.h>
+
+// thanks MaGetzUb
+#pragma comment(linker,"/manifestdependency:\"type='win32' "\
+                       "name='Microsoft.Windows.Common-Controls' "\
+                       "version='6.0.0.0' "\
+                       "processorArchitecture='*' "\
+                       "publicKeyToken='6595b64144ccf1df' "\
+                       "language='*' "\
+                       "\"")
+#endif
 
 #include <string>
 #include <vector>
@@ -16,27 +32,18 @@
 #include <variant>
 #include <iostream>
 #include <cstdint>
-#include <typeinfo>
-#include <typeindex>
-
-#include <gl/GL.h>
-#pragma comment (lib, "opengl32.lib")
-
+#include <algorithm>
+#include <locale.h>
 #include <cctype>
-
-// thanks MaGetzUb
-#pragma comment(linker,"/manifestdependency:\"type='win32' "\
-                       "name='Microsoft.Windows.Common-Controls' "\
-                       "version='6.0.0.0' "\
-                       "processorArchitecture='*' "\
-                       "publicKeyToken='6595b64144ccf1df' "\
-                       "language='*' "\
-                       "\"")
 
 // thanks MaGetzUb
 #include "utils.hpp"
 
 namespace gui {
+
+	class Container;
+	class Manager;
+	class Widget;
 
 #ifdef _WIN32
 	using String = std::basic_string<TCHAR>;
@@ -56,6 +63,7 @@ namespace gui {
 	struct Size { int width, height; };
 	struct Rect { int x, y, width, height; };
 	struct Font { int size; String family; };
+	struct Color { uint8_t r, g, b, a; };
 
 	using WID = size_t;
 
@@ -78,8 +86,23 @@ namespace gui {
 		template <typename HandleType, typename WindowParams>
 		class PlatformBase {
 		public:
-			virtual void notify(HandleType handle, NotificationType type, Notification notif) = 0;
+			virtual void notify(WID id, HandleType handle, NotificationType type, Notification notif) = 0;
 			virtual HandleType createWindow(int id, Size size, WindowParams params, void* userdata) = 0;
+
+			void notifyCached(const std::function<HandleType(WID)>& getWidgetHandle) {
+				for (auto& e : m_cache) {
+					HandleType handle = getWidgetHandle(e.id);
+					notify(e.id, handle, e.type, e.notif);
+				}
+			}
+		protected:
+			struct NotificationCacheEntry {
+				WID id;
+				NotificationType type;
+				Notification notif;
+			};
+
+			std::vector<NotificationCacheEntry> m_cache;
 		};
 
 #ifdef _WIN32
@@ -90,23 +113,29 @@ namespace gui {
 		};
 
 		static std::unordered_map<String, std::array<LONG_PTR, 3>> AlignmentTranslationMap = {
-			{ L"STATIC", { SS_LEFT, SS_CENTER, SS_RIGHT }},
-			{ L"EDIT", { ES_LEFT, ES_CENTER, ES_RIGHT }},
-			{ L"BUTTON", { BS_LEFT, BS_CENTER, BS_RIGHT }}
+			{ L"Static", { SS_LEFT, SS_CENTER, SS_RIGHT }},
+			{ L"Edit", { ES_LEFT, ES_CENTER, ES_RIGHT }},
+			{ L"Button", { BS_LEFT, BS_CENTER, BS_RIGHT }}
 		};
 
 		class PlatformWin32 : public PlatformBase<HWND, Win32WindowParams> {
 		public:
-			void notify(HWND handle, NotificationType type, Notification notif) {
-				if (!handle) return;
+			void notify(WID id, HWND handle, NotificationType type, Notification notif) {
+				if (!handle) {
+					m_cache.push_back(NotificationCacheEntry{ id, type, notif });
+					return;
+				}
 
 				switch (type) {
-					case NotificationType::SetText: SetWindowText(handle, std::get<String>(notif).c_str()); break;
+					case NotificationType::SetText:
+						SetWindowText(handle, std::get<String>(notif).c_str());
+						break;
 					case NotificationType::SetTextAlignment: {
 						String buf;
 						buf.resize(128);
 						GetClassName(handle, buf.data(), buf.size());
-
+						buf.erase(std::find(buf.begin(), buf.end(), '\0'), buf.end());
+						
 						LONG_PTR style = GetWindowLongPtr(handle, GWL_STYLE);
 						auto aligns = AlignmentTranslationMap[buf];
 
@@ -135,7 +164,7 @@ namespace gui {
 						LONG_PTR style = GetWindowLongPtr(handle, GWL_STYLE);
 						if (val) style |= ES_READONLY;
 						else {
-							if (style & ES_READONLY > 0)
+							if ((style & ES_READONLY) > 0)
 								style &= ~ES_READONLY;
 						}
 						SetWindowLongPtr(handle, GWL_STYLE, style);
@@ -146,7 +175,7 @@ namespace gui {
 						LONG_PTR style = GetWindowLongPtr(handle, GWL_STYLE);
 						if (val) style |= ES_MULTILINE;
 						else {
-							if (style & ES_MULTILINE > 0)
+							if ((style & ES_MULTILINE) > 0)
 								style &= ~ES_MULTILINE;
 						}
 						SetWindowLongPtr(handle, GWL_STYLE, style);
@@ -156,7 +185,7 @@ namespace gui {
 						LONG_PTR style = GetWindowLongPtr(handle, GWL_STYLE);
 						if (val) style |= ES_PASSWORD;
 						else {
-							if (style & ES_PASSWORD > 0)
+							if ((style & ES_PASSWORD) > 0)
 								style &= ~ES_PASSWORD;
 						}
 						SetWindowLongPtr(handle, GWL_STYLE, style);
@@ -189,8 +218,6 @@ namespace gui {
 
 	using namespace platform;
 
-	class Container;
-	class Manager;
 	class Widget {
 		friend class Manager;
 	public:
@@ -202,7 +229,7 @@ namespace gui {
 		virtual void create(Handle parent) = 0;
 
 		virtual void update() {
-			Platform.notify(handle, NotificationType::SetPositionAndSize, m_actualBounds);
+			Platform.notify(m_id, handle, NotificationType::SetPositionAndSize, m_actualBounds);
 		}
 
 		Handle handle{ nullptr };
@@ -214,35 +241,42 @@ namespace gui {
 		const WID& parent() const { return m_parent; }
 		const Rect& actualBounds() const { return m_actualBounds; }
 
-		const String& text() const { return m_text; }
-		void text(const String& tx) {
-			m_text = tx;
-			Platform.notify(handle, NotificationType::SetText, tx);
+		virtual String text() {
+			String ret{};
+#ifdef _WIN32
+			int sz = SendMessage(handle, WM_GETTEXTLENGTH, 0, 0);
+			ret.resize(sz);
+			SendMessage(handle, WM_GETTEXT, WPARAM(ret.size()+1), LPARAM(ret.data()));
+#endif
+			return ret;
+		}
+
+		virtual void text(const String& tx) {
+			Platform.notify(m_id, handle, NotificationType::SetText, tx);
 		}
 
 		const Alignment& textAlignment() const { return m_textAlignment; }
 		void textAlignment(const Alignment& tx) {
 			m_textAlignment = tx;
-			Platform.notify(handle, NotificationType::SetTextAlignment, tx);
+			Platform.notify(m_id, handle, NotificationType::SetTextAlignment, tx);
 		}
 
 		const String& fontFamily() const { return m_fontFamily; }
 		void fontFamily(const String& tx) {
 			m_fontFamily = tx;
-			Platform.notify(handle, NotificationType::SetFont, Font{ .size = m_fontSize, .family = tx });
+			Platform.notify(m_id, handle, NotificationType::SetFont, Font{ .size = m_fontSize, .family = tx });
 		}
 
 		int fontSize() const { return m_fontSize; }
 		void fontSize(int tx) {
 			m_fontSize = tx;
-			Platform.notify(handle, NotificationType::SetFont, Font{ .size = tx, .family = m_fontFamily });
+			Platform.notify(m_id, handle, NotificationType::SetFont, Font{ .size = tx, .family = m_fontFamily });
 		}
 
 	protected:
 		Rect m_actualBounds;
 		WID m_id{ 0 }, m_parent{ 0 };
 
-		String m_text{ L"Text" };
 		Alignment m_textAlignment{ Alignment::Center };
 		String m_fontFamily{ L"Segoe UI" };
 		int m_fontSize{ 16 };
@@ -252,7 +286,7 @@ namespace gui {
 
 	class Label : public Widget {
 	public:
-		Label(const String& text = L"") { this->text(text); }
+		Label(const String& tx = L"") { m_tempText = tx; }
 
 		void create(Handle parent) {
 #ifdef _WIN32
@@ -260,7 +294,7 @@ namespace gui {
 			params.className = L"STATIC";
 			params.parent = parent;
 			params.style = WS_VISIBLE | WS_CHILD;
-			params.text = m_text;
+			params.text = m_tempText;
 #endif
 
 			handle = Platform.createWindow(m_id, size, params, (void*)this);
@@ -268,11 +302,12 @@ namespace gui {
 
 	private:
 		HFONT m_font{ nullptr };
+		String m_tempText{};
 	};
 
 	class Button : public Widget {
 	public:
-		Button(const String& text = L"") { this->text(text); }
+		Button(const String& tx = L"") { m_tempText = tx; }
 
 		void create(Handle parent) {
 #ifdef _WIN32
@@ -280,7 +315,7 @@ namespace gui {
 			params.className = L"BUTTON";
 			params.parent = parent;
 			params.style = WS_VISIBLE | WS_CHILD | WS_TABSTOP | BS_DEFPUSHBUTTON;
-			params.text = m_text;
+			params.text = m_tempText;
 #endif
 
 			handle = Platform.createWindow(m_id, size, params, (void*)this);
@@ -289,12 +324,13 @@ namespace gui {
 		std::function<void()> onPressed;
 	private:
 		HFONT m_font{ nullptr };
+		String m_tempText{};
 	};
 
-	class TextBox : public Widget {
+	class Edit : public Widget {
 	public:
-		TextBox() = default;
-		~TextBox() {
+		Edit() = default;
+		~Edit() {
 			Widget::~Widget();
 			DestroyWindow(m_wrapper);
 		}
@@ -310,7 +346,7 @@ namespace gui {
 			params.style = WS_VISIBLE | WS_CHILD;
 
 			m_wrapper = Platform.createWindow(-1, size, params, (void*)this);
-			SetWindowSubclass(m_wrapper, TextBox::WndProc, 0, 0);
+			SetWindowSubclass(m_wrapper, Edit::WndProc, 0, 0);
 #endif
 
 #ifdef _WIN32
@@ -318,7 +354,6 @@ namespace gui {
 			eps.className = L"EDIT";
 			eps.parent = m_wrapper;
 			eps.style = WS_VISIBLE | WS_CHILD | WS_BORDER;
-			eps.text = m_text;
 #endif
 			handle = Platform.createWindow(m_id, size, eps, (void*)this);
 		}
@@ -337,11 +372,10 @@ namespace gui {
 							case EN_CHANGE: {
 								HWND widgetHnd = (HWND)lParam;
 
-								gui::Widget* widget = (gui::Widget*)GetWindowLongPtr(widgetHnd, GWLP_USERDATA);
-								gui::TextBox* tb = static_cast<gui::TextBox*>(widget);
+								gui::Widget* widget = (gui::Widget*)GetWindowLongPtr(hwnd, GWLP_USERDATA);
+								gui::Edit* tb = static_cast<gui::Edit*>(widget);
 								if (id == tb->id()) {
-									tb->m_text.resize(Edit_GetTextLength(widgetHnd));
-									GetWindowText(widgetHnd, tb->m_text.data(), tb->m_text.size());
+									// Use this for something else...
 								}
 							} break;
 						}
@@ -356,19 +390,19 @@ namespace gui {
 		bool multiLine() const { return m_multiLine; }
 		void multiLine(bool v) {
 			m_multiLine = v;
-			Platform.notify(handle, NotificationType::SetMultiline, v);
+			Platform.notify(m_id, handle, NotificationType::SetMultiline, v);
 		}
 
 		bool password() const { return m_password; }
 		void password(bool v) {
 			m_password = v;
-			Platform.notify(handle, NotificationType::SetPassword, v);
+			Platform.notify(m_id, handle, NotificationType::SetPassword, v);
 		}
 
 		bool readOnly() const { return m_readOnly; }
 		void readOnly(bool v) {
 			m_readOnly = v;
-			Platform.notify(handle, NotificationType::SetReadOnly, v);
+			Platform.notify(m_id, handle, NotificationType::SetReadOnly, v);
 		}
 
 	private:
@@ -471,7 +505,7 @@ namespace gui {
 		void update() override {
 			Widget::update();
 #ifdef _WIN32
-			Platform.notify(m_wrapper, NotificationType::SetPositionAndSize, m_actualBounds);
+			Platform.notify(m_id, m_wrapper, NotificationType::SetPositionAndSize, m_actualBounds);
 #endif
 		}
 
@@ -667,6 +701,146 @@ namespace gui {
 #ifdef _WIN32
 			int pos = ComboBox_AddString(handle, it->toString().c_str());
 			ComboBox_SetItemData(handle, pos, item);
+#endif
+		}
+
+	};
+
+	enum class UnderlineStyle {
+		None = 0,
+		Solid,
+		DoubleSolid,
+		Wavy
+	};
+
+	struct RichStyle {
+		Color background{ 255, 255, 255, 255 }, foreground{ 0, 0, 0, 255 };
+		UnderlineStyle underline{ UnderlineStyle::None };
+		bool strikeout{ false }, italic{ false }, bold{ false };
+	};
+
+	class RichEdit : public Widget {
+	public:
+		void create(Handle parent) {
+			// For other platforms maybe use Scintilla?
+#ifdef _WIN32
+			LoadLibrary(TEXT("Msftedit.dll"));
+
+			Win32WindowParams params = {};
+			params.className = MSFTEDIT_CLASS;
+			params.parent = parent;
+			params.style =
+				ES_MULTILINE | WS_VISIBLE | WS_CHILD |
+				WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL | ES_AUTOVSCROLL;
+#endif
+
+			handle = Platform.createWindow(m_id, size, params, (void*)this);
+#ifdef _WIN32
+			// Setup a monospaced font ;)
+			HFONT font = CreateFont(
+				16, 0, 0, 0, FW_DONTCARE,
+				FALSE, FALSE, FALSE,
+				ANSI_CHARSET,
+				OUT_DEFAULT_PRECIS,
+				CLIP_DEFAULT_PRECIS,
+				DEFAULT_QUALITY,
+				DEFAULT_PITCH | FF_SWISS,
+				TEXT("Consolas")
+			);
+			SendMessage(handle, WM_SETFONT, WPARAM(font), TRUE);
+
+			SendMessage(handle, EM_SHOWSCROLLBAR, SB_VERT, TRUE);
+			SendMessage(handle, EM_SHOWSCROLLBAR, SB_HORZ, TRUE);
+#endif
+		}
+
+		void select(int index, int length) {
+#ifdef _WIN32
+			CHARRANGE rng = {};
+			rng.cpMin = index;
+			rng.cpMax = index + length;
+			SendMessage(handle, EM_EXSETSEL, 0, LPARAM(&rng));
+#endif
+		}
+
+		void selectAll() {
+			select(0, -1);
+		}
+
+		void deselect() {
+			select(0, 0);
+		}
+
+		String selected() {
+			String ret{};
+#ifdef _WIN32
+			CHARRANGE rng = {};
+			SendMessage(handle, EM_EXGETSEL, 0, LPARAM(&rng));
+			if (rng.cpMax - rng.cpMin <= 0) return TEXT("");
+
+			ret.resize(rng.cpMax - rng.cpMin);
+			SendMessage(handle, EM_GETSELTEXT, 0, LPARAM(ret.data()));
+#endif
+			return ret;
+		}
+
+		int selectionStart() {
+			int value = 0;
+#ifdef _WIN32
+			CHARRANGE rng = {};
+			SendMessage(handle, EM_EXGETSEL, 0, LPARAM(&rng));
+			value = rng.cpMin;
+#endif
+			return value;
+		}
+
+		int selectionEnd() {
+			int value = 0;
+#ifdef _WIN32
+			CHARRANGE rng = {};
+			SendMessage(handle, EM_EXGETSEL, 0, LPARAM(&rng));
+			value = rng.cpMax;
+#endif
+			return value;
+		}
+
+		void formatSelection(RichStyle style) {
+#ifdef _WIN32
+			CHARFORMAT2 fmt = {};
+			fmt.cbSize = sizeof(CHARFORMAT2);
+			fmt.dwMask = CFM_COLOR | CFM_BACKCOLOR;
+
+			fmt.crTextColor = RGB(style.foreground.r, style.foreground.g, style.foreground.b);
+			fmt.crBackColor = RGB(style.background.r, style.background.g, style.background.b);
+
+			if (style.strikeout) {
+				fmt.dwMask |= CFM_STRIKEOUT;
+				fmt.dwEffects |= CFE_STRIKEOUT;
+			}
+
+			if (style.italic) {
+				fmt.dwMask |= CFM_ITALIC;
+				fmt.dwEffects |= CFE_ITALIC;
+			}
+
+			if (style.underline != UnderlineStyle::None) {
+				fmt.dwMask |= CFM_UNDERLINE;
+				fmt.dwEffects |= CFE_UNDERLINE;
+			}
+
+			if (style.bold) {
+				fmt.dwMask |= CFM_BOLD;
+				fmt.dwEffects |= CFE_BOLD;
+			}
+
+			switch (style.underline) {
+				default: break;
+				case UnderlineStyle::Solid: fmt.bUnderlineType = CFU_UNDERLINE; break;
+				case UnderlineStyle::DoubleSolid: fmt.bUnderlineType = CFU_UNDERLINEDOTTED; break;
+				case UnderlineStyle::Wavy: fmt.bUnderlineType = CFU_UNDERLINEWAVE; break;
+			}
+
+			SendMessage(handle, EM_SETCHARFORMAT, WPARAM(SCF_SELECTION), LPARAM(&fmt));
 #endif
 		}
 
@@ -1207,7 +1381,7 @@ namespace gui {
 		static WidgetBuilderMap WidgetBuilders = {
 			WIDGET_BUILDER(Label, L"label"),
 			WIDGET_BUILDER(Button, L"button"),
-			WIDGET_BUILDER(TextBox, L"textbox"),
+			WIDGET_BUILDER(Edit, L"edit"),
 			WIDGET_BUILDER(Spacer, L"spacer"),
 			WIDGET_BUILDER(ListBox, L"listbox"),
 			WIDGET_BUILDER(ComboBox, L"combobox"),
@@ -1223,12 +1397,24 @@ namespace gui {
 
 			if (props.find(L"height") != props.end())
 				w->size.height = std::get<int>(props[L"height"]);
+
+			if (props.find(L"text") != props.end())
+				w->text(std::get<String>(props[L"text"]));
+
+			if (props.find(L"alignment") != props.end())
+				w->textAlignment(utils::parseAlignment(std::get<String>(props[L"alignment"])));
+
+			if (props.find(L"fontSize") != props.end())
+				w->fontSize(std::get<int>(props[L"fontSize"]));
+
+			if (props.find(L"fontFamily") != props.end())
+				w->fontFamily(std::get<String>(props[L"fontFamily"]));
 		};
 
 		static WidgetSetupMap WidgetSetups = {
 			{ L"label", DefaultWidgetSetup },
 			{ L"button", DefaultWidgetSetup },
-			{ L"textbox", DefaultWidgetSetup },
+			{ L"edit", DefaultWidgetSetup },
 			{ L"spacer", DefaultWidgetSetup },
 			{ L"listbox", DefaultWidgetSetup },
 			{ L"combobox", DefaultWidgetSetup },
@@ -1422,13 +1608,9 @@ namespace gui {
 					Manager* man = (Manager*)GetWindowLongPtr(hwnd, GWLP_USERDATA);
 					man->createWidgets(hwnd);
 
-					HFONT font = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
-					SendMessage(hwnd, WM_SETFONT, WPARAM(font), TRUE);
-
-					for (WID id : man->widgets()) {
-						Widget* wid = man->get(id);
-						SendMessage(wid->handle, WM_SETFONT, WPARAM(font), TRUE);
-					}
+					Platform.notifyCached([&](WID id) {
+						return man->get(id)->handle;
+					});
 				} break;
 				case WM_DESTROY: PostQuitMessage(0); break;
 				case WM_SIZE: {
