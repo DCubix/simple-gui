@@ -169,12 +169,35 @@ public:
 	}
 };
 
+class MarkupWindow : public gui::Window {
+public:
+	void onCreate(gui::Manager& man) override {
+		root().flow = gui::Flow::Vertical;
+
+		gui::String ui = LR"(
+container(height=40, border=0, flex=0) {
+	button(width=120, flex=0, text="Button")
+}
+)";
+
+		loadMarkup(ui);
+
+		resize(400, 400);
+	}
+};
+
 int main(int argc, char** argv) {
 	//Calculator cal1{};
 	//cal1.show();
 
-	WidgetsTest wt{};
-	wt.show();
+	//WidgetsTest wt{};
+	//wt.show();
+
+	//gui::Window::mainLoop();
+
+	
+	MarkupWindow win{};
+	win.show();
 
 	gui::Window::mainLoop();
 	

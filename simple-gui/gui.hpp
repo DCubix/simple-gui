@@ -12,12 +12,16 @@
 #include <unordered_map>
 #include <memory>
 #include <functional>
-
+#include <variant>
 #include <iostream>
 #include <cstdint>
+#include <typeinfo>
+#include <typeindex>
 
 #include <gl/GL.h>
 #pragma comment (lib, "opengl32.lib")
+
+#include <cctype>
 
 // thanks MaGetzUb
 #pragma comment(linker,"/manifestdependency:\"type='win32' "\
@@ -185,6 +189,7 @@ namespace gui {
 
 	class TextBox : public Widget {
 	public:
+		TextBox() = default;
 		~TextBox() {
 			Widget::~Widget();
 			DestroyWindow(m_wrapper);
@@ -296,6 +301,7 @@ namespace gui {
 
 	class Spacer : public Widget {
 	public:
+		Spacer() = default;
 		void create() {
 			handle = CreateWindow(
 				L"STATIC",
@@ -325,6 +331,7 @@ namespace gui {
 
 	class ListBox : public Widget {
 	public:
+		ListBox() = default;
 		~ListBox() {
 			Widget::~Widget();
 			DestroyWindow(m_wrapper);
@@ -445,6 +452,8 @@ namespace gui {
 
 	class ComboBox : public Widget {
 	public:
+		ComboBox() = default;
+
 		~ComboBox() {
 			Widget::~Widget();
 			DestroyWindow(m_wrapper);
@@ -967,6 +976,297 @@ namespace gui {
 		}
 	};
 
+	namespace markup {
+		enum class TokenType {
+			Identifier,
+			Int,
+			Float,
+			String,
+			LParen,
+			RParen,
+			LBracket,
+			RBracket,
+			Comma,
+			Equals
+		};
+
+		using Value = std::variant<int, float, String>;
+
+		struct Token {
+			String lexeme;
+			TokenType type;
+			Value value;
+		};
+
+		class Scanner {
+		public:
+			Scanner() = default;
+			~Scanner() = default;
+
+			Scanner(const String& d) : data(d) {}
+
+			TCHAR peek() {
+				if (data.empty()) return '\0';
+				return data[0];
+			}
+
+			TCHAR scan() {
+				if (data.empty()) return '\0';
+				TCHAR chr = peek();
+				data.erase(data.begin());
+				return chr;
+			}
+
+			String scanWhile(std::function<bool(TCHAR)> cond) {
+				String ret{};
+				while (peek() && cond(peek())) {
+					ret += scan();
+				}
+				return ret;
+			}
+
+			String data;
+		};
+
+		static std::vector<Token> tokenize(const String& str) {
+			std::vector<Token> tokens;
+			std::unique_ptr<Scanner> sc = std::make_unique<Scanner>(str);
+
+			while (sc->peek()) {
+				if (::iswalpha(sc->peek())) { // Identifiers
+					auto txt = sc->scanWhile([](TCHAR c) { return ::iswalnum(c); });
+					tokens.push_back(Token{ txt, TokenType::Identifier, txt });
+				} else if (::iswdigit(sc->peek())) { // Int/Float
+					auto txt = sc->scanWhile([](TCHAR c) { return ::iswdigit(c) || c == '.' || c == '-'; });
+					if (txt.find_first_of('.') != txt.npos) {
+						tokens.push_back(Token{ txt, TokenType::Float, std::stof(txt) });
+					} else {
+						tokens.push_back(Token{ txt, TokenType::Int, std::stoi(txt) });
+					}
+				} else if (sc->peek() == '"') { // Strings
+					sc->scan(); // eat that " 
+					auto txt = sc->scanWhile([](TCHAR c) { return c != '"'; });
+					sc->scan(); // eat that " 
+					tokens.push_back(Token{ txt, TokenType::String, txt });
+				} else if (sc->peek() == '(') {
+					sc->scan();
+					tokens.push_back(Token{ TEXT("("), TokenType::LParen, 0 });
+				} else if (sc->peek() == ')') {
+					sc->scan();
+					tokens.push_back(Token{ TEXT(")"), TokenType::RParen, 0 });
+				} else if (sc->peek() == '{') {
+					sc->scan();
+					tokens.push_back(Token{ TEXT("{"), TokenType::LBracket, 0 });
+				} else if (sc->peek() == '}') {
+					sc->scan();
+					tokens.push_back(Token{ TEXT("}"), TokenType::RBracket, 0 });
+				} else if (sc->peek() == ',') {
+					sc->scan();
+					tokens.push_back(Token{ TEXT(","), TokenType::Comma, 0 });
+				} else if (sc->peek() == '=') {
+					sc->scan();
+					tokens.push_back(Token{ TEXT("="), TokenType::Equals, 0 });
+				} else {
+					sc->scan();
+				}
+			}
+
+			return tokens;
+		}
+
+		namespace utils {
+			static Alignment parseAlignment(const String& str) {
+				if (str == L"left" || str == L"LEFT") return Alignment::Left;
+				else if (str == L"center" || str == L"CENTER") return Alignment::Center;
+				else if (str == L"right" || str == L"RIGHT") return Alignment::Right;
+				return Alignment::Left;
+			}
+
+			static Flow parseFlow(const String& str) {
+				if (str == L"horizontal" || str == L"HORIZONTAL") return Flow::Horizontal;
+				else if (str == L"vertical" || str == L"VERTICAL") return Flow::Vertical;
+				return Flow::Horizontal;
+			}
+		}
+
+		using WidgetPropMap = std::unordered_map<String, Value>;
+		using WidgetBuilderMap = std::unordered_map<String, std::function<Widget*(WID, Manager&)>>;
+		using WidgetSetupMap = std::unordered_map<String, std::function<void(Widget*, WidgetPropMap)>>;
+
+#define WIDGET_BUILDER(T, name) { name, [](WID p, Manager& man) { auto&& ob = man.create<T>(p); return man.get(ob.id()); } }
+
+		static WidgetBuilderMap WidgetBuilders = {
+			WIDGET_BUILDER(Label, L"label"),
+			WIDGET_BUILDER(Button, L"button"),
+			WIDGET_BUILDER(TextBox, L"textbox"),
+			WIDGET_BUILDER(Spacer, L"spacer"),
+			WIDGET_BUILDER(ListBox, L"listbox"),
+			WIDGET_BUILDER(ComboBox, L"combobox"),
+			WIDGET_BUILDER(Container, L"container")
+		};
+
+		static std::function<void(Widget*, WidgetPropMap)> DefaultWidgetSetup = [](Widget* w, WidgetPropMap props) {
+			if (props.find(L"flex") != props.end())
+				w->flex = std::get<int>(props[L"flex"]);
+
+			if (props.find(L"width") != props.end())
+				w->size.width = std::get<int>(props[L"width"]);
+
+			if (props.find(L"height") != props.end())
+				w->size.height = std::get<int>(props[L"height"]);
+		};
+
+		static WidgetSetupMap WidgetSetups = {
+			{ L"label", [](Widget* w, WidgetPropMap props) {
+				DefaultWidgetSetup(w, props);
+				Label* lbl = static_cast<Label*>(w);
+
+				if (props.find(L"text") != props.end())
+					lbl->text = std::get<String>(props[L"text"]);
+
+				if (props.find(L"alignment") != props.end())
+					lbl->alignment = utils::parseAlignment(std::get<String>(props[L"alignment"]));
+
+				if (props.find(L"fontSize") != props.end())
+					lbl->fontSize = std::get<int>(props[L"fontSize"]);
+
+				if (props.find(L"fontFamily") != props.end())
+					lbl->fontFamily = std::get<String>(props[L"fontFamily"]);
+			}},
+			{ L"button", [](Widget* w, WidgetPropMap props) {
+				DefaultWidgetSetup(w, props);
+
+				Button* lbl = static_cast<Button*>(w);
+				if (props.find(L"text") != props.end())
+					lbl->text = std::get<String>(props[L"text"]);
+
+				if (props.find(L"fontSize") != props.end())
+					lbl->fontSize = std::get<int>(props[L"fontSize"]);
+
+				if (props.find(L"fontFamily") != props.end())
+					lbl->fontFamily = std::get<String>(props[L"fontFamily"]);
+			}},
+			{ L"textbox", [](Widget* w, WidgetPropMap props) {
+				DefaultWidgetSetup(w, props);
+
+				TextBox* lbl = static_cast<TextBox*>(w);
+				if (props.find(L"text") != props.end())
+					lbl->text = std::get<String>(props[L"text"]);
+
+				if (props.find(L"alignment") != props.end())
+					lbl->alignment = utils::parseAlignment(std::get<String>(props[L"alignment"]));
+
+				if (props.find(L"fontSize") != props.end())
+					lbl->fontSize = std::get<int>(props[L"fontSize"]);
+
+				if (props.find(L"fontFamily") != props.end())
+					lbl->fontFamily = std::get<String>(props[L"fontFamily"]);
+			}},
+			{ L"spacer", DefaultWidgetSetup },
+			{ L"listbox", DefaultWidgetSetup },
+			{ L"combobox", DefaultWidgetSetup },
+			{ L"container", [](Widget* w, WidgetPropMap props) {
+				DefaultWidgetSetup(w, props);
+
+				Container* lbl = static_cast<Container*>(w);
+				if (props.find(L"spacing") != props.end())
+					lbl->spacing = std::get<int>(props[L"spacing"]);
+				
+				if (props.find(L"border") != props.end())
+					lbl->border = std::get<int>(props[L"border"]);
+
+				if (props.find(L"flow") != props.end())
+					lbl->flow = utils::parseFlow(std::get<String>(props[L"flow"]));
+			}}
+		};
+
+		class Parser {
+		public:
+			Parser() = default;
+			~Parser() = default;
+
+			Parser(const String& input) {
+				m_tokens = tokenize(input);
+			}
+
+			void parse(Manager& man) { parseWidget(BaseWidgetID, man); }
+
+		private:
+			size_t m_position{ 0 };
+			std::vector<Token> m_tokens;
+
+			WidgetBuilderMap m_builders = WidgetBuilders;
+			WidgetSetupMap m_setups = WidgetSetups;
+
+			const Token& current() {
+				return m_tokens[m_position];
+			}
+
+			const Token& previous() {
+				return m_tokens[m_position-1];
+			}
+
+			bool accept(TokenType type) {
+				if (current().type == type) {
+					m_position++;
+					return true;
+				}
+				return false;
+			}
+
+			bool expect(TokenType type) {
+				if (!accept(type)) {
+					std::cout << "Expected: " << int(type) << std::endl;
+					return false;
+				}
+				return true;
+			}
+
+			void parseWidget(WID parent, Manager& man) {
+				if (m_position >= m_tokens.size() - 1) return;
+
+				if (accept(TokenType::Identifier)) {
+					auto& tok = previous();
+					String val = std::get<String>(tok.value);
+
+					if (!expect(TokenType::LParen)) return;
+
+					WidgetPropMap props;
+					while (current().type != TokenType::RParen) {
+						if (expect(TokenType::Identifier)) {
+							auto& id = std::get<String>(previous().value);
+							if (expect(TokenType::Equals)) {
+								props[id] = current().value;
+								m_position++;
+
+								if (accept(TokenType::RParen)) break;
+								else if (!expect(TokenType::Comma)) break;
+							} else {
+								break;
+							}
+						} else {
+							break;
+						}
+					}
+					if (current().type == TokenType::RParen) {
+						m_position++;
+					}
+
+					if (m_builders.find(val) != m_builders.end()) {
+						Widget* wid = m_builders[val](parent, man);
+						m_setups[val](wid, props);
+						if (accept(TokenType::LBracket)) {
+							while (current().type == TokenType::Identifier) {
+								parseWidget(wid->id(), man);
+							}
+							expect(TokenType::RBracket);
+						}
+					}
+				}
+			}
+		};
+	};
+
 	static size_t WindowID = 0;
 
 	constexpr int DefaultWidth = 320;
@@ -1100,6 +1400,11 @@ namespace gui {
 
 		void setTitle(const String& title) {
 			SetWindowText(m_hwnd, title.c_str());
+		}
+
+		void loadMarkup(const String& text) {
+			std::unique_ptr<markup::Parser> p = std::make_unique<markup::Parser>(text);
+			p->parse(*m_manager.get());
 		}
 
 	private:
