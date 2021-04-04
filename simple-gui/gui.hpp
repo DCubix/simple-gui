@@ -98,6 +98,8 @@ namespace gui {
 		class PlatformWin32 : public PlatformBase<HWND, Win32WindowParams> {
 		public:
 			void notify(HWND handle, NotificationType type, Notification notif) {
+				if (!handle) return;
+
 				switch (type) {
 					case NotificationType::SetText: SetWindowText(handle, std::get<String>(notif).c_str()); break;
 					case NotificationType::SetTextAlignment: {
