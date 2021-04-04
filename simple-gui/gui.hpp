@@ -754,6 +754,26 @@ namespace gui {
 #endif
 		}
 
+		void find(const String& str, const std::function<void(std::pair<int, int>)>& found) {
+#ifdef _WIN32
+			FINDTEXTEX fnd = {};
+			fnd.chrg.cpMin = 0;
+			fnd.chrg.cpMax = -1;
+			fnd.lpstrText = str.c_str();
+			int foundAt = SendMessage(handle, EM_FINDTEXTEX, FR_DOWN | FR_MATCHCASE, LPARAM(&fnd));
+
+			while (foundAt != -1) {
+				found({ fnd.chrgText.cpMin, fnd.chrgText.cpMax - fnd.chrgText.cpMin });
+
+				fnd.chrg.cpMin = foundAt + str.size();
+				fnd.chrg.cpMax = -1;
+				fnd.lpstrText = str.c_str();
+
+				foundAt = SendMessage(handle, EM_FINDTEXTEX, FR_DOWN | FR_MATCHCASE, LPARAM(&fnd));
+			}
+#endif
+		}
+
 		void select(int index, int length) {
 #ifdef _WIN32
 			CHARRANGE rng = {};
@@ -802,6 +822,15 @@ namespace gui {
 			value = rng.cpMax;
 #endif
 			return value;
+		}
+
+		void resetFormat() {
+#ifdef _WIN32
+			CHARFORMAT2 fmt = {};
+			fmt.cbSize = sizeof(CHARFORMAT2);
+			fmt.dwMask = 0;
+			SendMessage(handle, EM_SETCHARFORMAT, WPARAM(SCF_SELECTION), LPARAM(&fmt));
+#endif
 		}
 
 		void formatSelection(RichStyle style) {
@@ -1607,6 +1636,16 @@ namespace gui {
 				case WM_SHOWWINDOW: {
 					Manager* man = (Manager*)GetWindowLongPtr(hwnd, GWLP_USERDATA);
 					man->createWidgets(hwnd);
+
+					HFONT font = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+					SendMessage(hwnd, WM_SETFONT, WPARAM(font), TRUE);
+
+					for (WID id : man->widgets()) {
+						Widget* wid = man->get(id);
+						if (dynamic_cast<RichEdit*>(wid)) continue;
+
+						SendMessage(wid->handle, WM_SETFONT, WPARAM(font), TRUE);
+					}
 
 					Platform.notifyCached([&](WID id) {
 						return man->get(id)->handle;

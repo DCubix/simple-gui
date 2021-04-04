@@ -165,6 +165,19 @@ public:
 	}
 };
 
+static std::unordered_map<gui::String, gui::Color> luaMap = {
+	{ L"if", gui::Color{ 0, 50, 230, 255 } },
+	{ L"then", gui::Color{ 0, 50, 230, 255 } },
+	{ L"else", gui::Color{ 0, 50, 230, 255 } },
+	{ L"end", gui::Color{ 0, 50, 230, 255 } },
+	{ L"elseif", gui::Color{ 0, 50, 230, 255 } },
+	{ L"function", gui::Color{ 0, 50, 230, 255 } },
+	{ L"local", gui::Color{ 0, 50, 230, 255 } },
+	{ L"do", gui::Color{ 0, 50, 230, 255 } },
+	{ L"while", gui::Color{ 0, 50, 230, 255 } },
+	{ L"return", gui::Color{ 0, 50, 230, 255 } }
+};
+
 class RichEditTest : public gui::Window {
 public:
 	void onCreate(gui::Manager& man) override {
@@ -176,17 +189,23 @@ public:
 		gui::Container& cnt = man.create<gui::Container>(root().id(), gui::Size{ 0, 36 });
 		cnt.flex = 0;
 
-		gui::Button& btn = man.create<gui::Button>(cnt.id(), L"Fabulous!");
+		gui::Button& btn = man.create<gui::Button>(cnt.id(), L"Colorize!");
 		btn.size.width = 120;
 		btn.flex = 0;
 
 		btn.onPressed = [&]() {
-			red.formatSelection(gui::RichStyle{
-				.foreground = gui::Color{ 0, 100, 255, 255 },
-				.underline = gui::UnderlineStyle::DoubleSolid,
-				.italic = true,
-				.bold = true
-			});
+			red.selectAll();
+			red.resetFormat();
+			for (auto& [kw, col] : luaMap) {
+				red.find(kw, [&](std::pair<int, int> sel) {
+					auto [index, len] = sel;
+					red.select(index, len);
+					red.formatSelection(gui::RichStyle{
+						.foreground = col,
+						.bold = true
+					});
+				});
+			}
 		};
 
 		resize(400, 400);
