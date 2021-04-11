@@ -183,30 +183,28 @@ public:
 	void onCreate(gui::Manager& man) override {
 		root().flow = gui::Flow::Vertical;
 
-		gui::RichEdit& red = man.create<gui::RichEdit>(root().id());
+		gui::CodeEdit& red = man.create<gui::CodeEdit>(root().id());
 		red.flex = 1;
+		red.background = gui::Color{ 40, 40, 40, 255 };
+		red.foreground = gui::Color{ 240, 240, 240, 255 };
 
-		gui::Container& cnt = man.create<gui::Container>(root().id(), gui::Size{ 0, 36 });
+		gui::HighlightingRule kwRule = {
+			.style = {
+				.background = red.background,
+				.foreground = gui::Color{ 20, 177, 217, 255 },
+				.bold = true
+			},
+			.pattern = L"\".*\""
+		};
+		red.highlightingRules.push_back(kwRule);
+
+		gui::Container& cnt = man.create<gui::Container>(root().id(), gui::Size{ 0, 32 });
 		cnt.flex = 0;
 
 		gui::Button& btn = man.create<gui::Button>(cnt.id(), L"Colorize!");
 		btn.size.width = 120;
+		btn.size.height = 32;
 		btn.flex = 0;
-
-		btn.onPressed = [&]() {
-			red.selectAll();
-			red.resetFormat();
-			for (auto& [kw, col] : luaMap) {
-				red.find(kw, [&](std::pair<int, int> sel) {
-					auto [index, len] = sel;
-					red.select(index, len);
-					red.formatSelection(gui::RichStyle{
-						.foreground = col,
-						.bold = true
-					});
-				});
-			}
-		};
 
 		resize(400, 400);
 	}
@@ -223,6 +221,8 @@ int main(int argc, char** argv) {
 	win.show();
 
 	gui::Window::mainLoop();
+
+	//std::wregex re(L"\\b(class|public|void|override|char|int|float|double|if|else|while|do|for|auto|true|false|bool)\\b");
 	
 	return 0;
 }

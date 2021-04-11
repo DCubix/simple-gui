@@ -35,6 +35,8 @@
 #include <algorithm>
 #include <locale.h>
 #include <cctype>
+#include <regex>
+#include <stack>
 
 // thanks MaGetzUb
 #include "utils.hpp"
@@ -276,6 +278,7 @@ namespace gui {
 	protected:
 		Rect m_actualBounds;
 		WID m_id{ 0 }, m_parent{ 0 };
+		std::vector<WID> m_children;
 
 		Alignment m_textAlignment{ Alignment::Center };
 		String m_fontFamily{ L"Segoe UI" };
@@ -719,16 +722,43 @@ namespace gui {
 		bool strikeout{ false }, italic{ false }, bold{ false };
 	};
 
-	class RichEdit : public Widget {
+	struct HighlightingRule {
+		RichStyle style{};
+		String pattern{ L"*" };
+	};
+
+	class CodeEdit : public Widget {
 	public:
+		~CodeEdit() {
+			Widget::~Widget();
+#ifdef _WIN32
+			DestroyWindow(m_wrapper);
+#endif
+		}
+
+		Color foreground{ 0, 0, 0, 255 }, background{ 255, 255, 255, 255 };
+
 		void create(Handle parent) {
+#ifdef _WIN32
+			// Due to a bug in the Windows API, the EDIT control does not update its parent when
+			// SetParent is called, so we have to wrap it around a dummy window for it to
+			// receive events.
+			Win32WindowParams wparams = {};
+			wparams.className = L"STATIC";
+			wparams.parent = parent;
+			wparams.style = WS_VISIBLE | WS_CHILD;
+
+			m_wrapper = Platform.createWindow(-1, size, wparams, (void*)this);
+			SetWindowSubclass(m_wrapper, CodeEdit::WndProc, 0, 0);
+#endif
+
 			// For other platforms maybe use Scintilla?
 #ifdef _WIN32
 			LoadLibrary(TEXT("Msftedit.dll"));
 
 			Win32WindowParams params = {};
 			params.className = MSFTEDIT_CLASS;
-			params.parent = parent;
+			params.parent = m_wrapper;
 			params.style =
 				ES_MULTILINE | WS_VISIBLE | WS_CHILD |
 				WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL | ES_AUTOVSCROLL;
@@ -738,7 +768,7 @@ namespace gui {
 #ifdef _WIN32
 			// Setup a monospaced font ;)
 			HFONT font = CreateFont(
-				16, 0, 0, 0, FW_DONTCARE,
+				18, 0, 0, 0, FW_DONTCARE,
 				FALSE, FALSE, FALSE,
 				ANSI_CHARSET,
 				OUT_DEFAULT_PRECIS,
@@ -751,27 +781,149 @@ namespace gui {
 
 			SendMessage(handle, EM_SHOWSCROLLBAR, SB_VERT, TRUE);
 			SendMessage(handle, EM_SHOWSCROLLBAR, SB_HORZ, TRUE);
+
+			SendMessage(handle, EM_SETEVENTMASK, 0, ENM_CHANGE);
+			//SendMessage(handle, EM_SETEVENTMASK, 0, ENM_CLIPFORMAT);
+			//SendMessage(handle, EM_SETEVENTMASK, 0, ENM_KEYEVENTS);
+
+			SendMessage(handle, EM_SETBKGNDCOLOR, 0, RGB(background.r, background.g, background.b));
 #endif
 		}
 
-		void find(const String& str, const std::function<void(std::pair<int, int>)>& found) {
 #ifdef _WIN32
-			FINDTEXTEX fnd = {};
-			fnd.chrg.cpMin = 0;
-			fnd.chrg.cpMax = -1;
-			fnd.lpstrText = str.c_str();
-			int foundAt = SendMessage(handle, EM_FINDTEXTEX, FR_DOWN | FR_MATCHCASE, LPARAM(&fnd));
+		static LRESULT CALLBACK WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam, UINT_PTR, DWORD_PTR) {
+			//std::cout << GetWMName(uMsg) << std::endl;
+			switch (uMsg) {
+				/*case WM_NOTIFY: {
+					NMHDR* nm = (NMHDR*)lParam;
+					if (nm->code == EN_MSGFILTER) {
+						MSGFILTER* mf = (MSGFILTER*)lParam;
+						if (mf->msg == WM_KEYUP && mf->wParam == VK_RETURN) {
+							gui::Widget* widget = (gui::Widget*)GetWindowLongPtr(hwnd, GWLP_USERDATA);
+							gui::CodeEdit* tb = static_cast<gui::CodeEdit*>(widget);
 
-			while (foundAt != -1) {
-				found({ fnd.chrgText.cpMin, fnd.chrgText.cpMax - fnd.chrgText.cpMin });
+							int linesBelow = tb->lineCount() - tb->currentLineIndex();
 
-				fnd.chrg.cpMin = foundAt + str.size();
-				fnd.chrg.cpMax = -1;
-				fnd.lpstrText = str.c_str();
+							SendMessage(hwnd, WM_SETREDRAW, false, 0);
+							for (int i = 0; i < linesBelow; i++) {
+								tb->highlight(i + tb->currentLineIndex());
+							}
+							SendMessage(hwnd, WM_SETREDRAW, true, 0);
+						}
+					}
+				} break;*/
+				case WM_COMMAND: {
+					if (HIWORD(wParam) > 1) {
+						auto id = LOWORD(wParam);
+						auto cmd = HIWORD(wParam);
 
-				foundAt = SendMessage(handle, EM_FINDTEXTEX, FR_DOWN | FR_MATCHCASE, LPARAM(&fnd));
+						if (id < BaseWidgetID) break;
+						switch (cmd) {
+							case EN_CHANGE: {
+								gui::Widget* widget = (gui::Widget*)GetWindowLongPtr(hwnd, GWLP_USERDATA);
+								gui::CodeEdit* tb = static_cast<gui::CodeEdit*>(widget);
+
+								int em = SendMessage(tb->handle, EM_SETEVENTMASK, 0, 0);
+								SendMessage(tb->handle, WM_SETREDRAW, false, 0);
+								for (int i = 0; i < tb->lineCount(); i++) {
+									tb->highlight(i);
+								}
+								SendMessage(tb->handle, WM_SETREDRAW, true, 0);
+								InvalidateRect(tb->handle, nullptr, true);
+								SendMessage(tb->handle, EM_SETEVENTMASK, 0, em);
+							} break;
+						}
+					}
+				} break;
+				case WM_NCDESTROY: RemoveWindowSubclass(hwnd, WndProc, 0); break;
 			}
+			return DefSubclassProc(hwnd, uMsg, wParam, lParam);
+		}
 #endif
+
+		void highlight(int line = -1) {
+			for (auto& hr : highlightingRules) {
+				highlightStyle(line, hr.pattern, hr.style);
+			}
+		}
+
+		void highlightStyle(int line, const String& regex, RichStyle style) {
+			if (line >= lineCount()) return;
+
+			line = line < 0 ? currentLineIndex() : line;
+			auto [idx, len] = lineMetrics(line);
+
+			String text;
+			int offset = 0;
+#ifdef _WIN32
+			// Get first char index of current line
+			offset = SendMessage(handle, EM_LINEINDEX, WPARAM(line), 0);
+			size_t sz = SendMessage(handle, EM_LINELENGTH, WPARAM(line), 0);
+			sz += offset;
+
+			text.resize(sz);
+
+			Edit_GetLine(handle, line, text.data(), sz);
+			
+#endif
+			if (offset == -1) return;
+
+			auto sel = selection();
+			select(offset, text.size());
+			resetFormat();
+
+			std::wregex re(regex);
+			std::wsmatch sm;
+			bool matched = false;
+			while (std::regex_search(text, sm, re)) {
+				select(sm.position(0) + offset, sm[0].length());
+				formatSelection(style);
+				offset += sm[0].length();
+				text = sm.suffix().str();
+			}
+
+			select(std::get<0>(sel), 0);
+		}
+
+		std::pair<int, int> currentLineMetrics() {
+			return lineMetrics(-1);
+		}
+
+		std::pair<int, int> lineMetrics(int line) {
+			int idx = 0, len = 0;
+#ifdef _WIN32
+			int chrPos = SendMessage(handle, EM_LINEINDEX, WPARAM(line), 0);
+			idx = SendMessage(handle, EM_LINEFROMCHAR, WPARAM(chrPos), 0);
+			len = SendMessage(handle, EM_LINELENGTH, WPARAM(idx), 0);
+#endif
+			return { idx, len };
+		}
+
+		std::pair<int, int> selection() {
+			int idx = 0, len = 0;
+#ifdef _WIN32
+			CHARRANGE rng = {};
+			SendMessage(handle, EM_EXGETSEL, 0, LPARAM(&rng));
+			idx = rng.cpMin;
+			len = rng.cpMax - rng.cpMin;
+#endif
+			return { idx, len };
+		}
+
+		int currentLineIndex() {
+			int idx = 0;
+#ifdef _WIN32
+			idx = SendMessage(handle, EM_LINEFROMCHAR, WPARAM(-1), 0);
+#endif
+			return idx;
+		}
+
+		int lineCount() {
+			int cnt = 0;
+#ifdef _WIN32
+			cnt = SendMessage(handle, EM_GETLINECOUNT, 0, 0);
+#endif
+			return cnt;
 		}
 
 		void select(int index, int length) {
@@ -804,33 +956,15 @@ namespace gui {
 			return ret;
 		}
 
-		int selectionStart() {
-			int value = 0;
-#ifdef _WIN32
-			CHARRANGE rng = {};
-			SendMessage(handle, EM_EXGETSEL, 0, LPARAM(&rng));
-			value = rng.cpMin;
-#endif
-			return value;
-		}
-
-		int selectionEnd() {
-			int value = 0;
-#ifdef _WIN32
-			CHARRANGE rng = {};
-			SendMessage(handle, EM_EXGETSEL, 0, LPARAM(&rng));
-			value = rng.cpMax;
-#endif
-			return value;
-		}
-
 		void resetFormat() {
-#ifdef _WIN32
-			CHARFORMAT2 fmt = {};
-			fmt.cbSize = sizeof(CHARFORMAT2);
-			fmt.dwMask = 0;
-			SendMessage(handle, EM_SETCHARFORMAT, WPARAM(SCF_SELECTION), LPARAM(&fmt));
-#endif
+			RichStyle style = {};
+			style.background = background;
+			style.foreground = foreground;
+			style.bold = false;
+			style.italic = false;
+			style.strikeout = false;
+			style.underline = UnderlineStyle::None;
+			formatSelection(style);
 		}
 
 		void formatSelection(RichStyle style) {
@@ -845,27 +979,35 @@ namespace gui {
 			if (style.strikeout) {
 				fmt.dwMask |= CFM_STRIKEOUT;
 				fmt.dwEffects |= CFE_STRIKEOUT;
+			} else {
+				fmt.dwMask |= CFM_STRIKEOUT;
 			}
 
 			if (style.italic) {
 				fmt.dwMask |= CFM_ITALIC;
 				fmt.dwEffects |= CFE_ITALIC;
+			} else {
+				fmt.dwMask |= CFM_ITALIC;
 			}
 
 			if (style.underline != UnderlineStyle::None) {
 				fmt.dwMask |= CFM_UNDERLINE;
 				fmt.dwEffects |= CFE_UNDERLINE;
+			} else {
+				fmt.dwMask |= CFM_UNDERLINE;
 			}
 
 			if (style.bold) {
 				fmt.dwMask |= CFM_BOLD;
 				fmt.dwEffects |= CFE_BOLD;
+			} else {
+				fmt.dwMask |= CFM_BOLD;
 			}
 
 			switch (style.underline) {
 				default: break;
 				case UnderlineStyle::Solid: fmt.bUnderlineType = CFU_UNDERLINE; break;
-				case UnderlineStyle::DoubleSolid: fmt.bUnderlineType = CFU_UNDERLINEDOTTED; break;
+				case UnderlineStyle::DoubleSolid: fmt.bUnderlineType = CFU_UNDERLINETHICK; break;
 				case UnderlineStyle::Wavy: fmt.bUnderlineType = CFU_UNDERLINEWAVE; break;
 			}
 
@@ -873,6 +1015,12 @@ namespace gui {
 #endif
 		}
 
+		std::vector<HighlightingRule> highlightingRules;
+
+	private:
+#ifdef _WIN32
+		HWND m_wrapper;
+#endif
 	};
 
 #ifdef _WIN32
@@ -1128,15 +1276,15 @@ namespace gui {
 			switch (uMsg) {
 				case WM_COMMAND: {
 					auto id = LOWORD(wParam);
+					auto hwnd = (HWND)lParam;
 
 					if (id < BaseWidgetID) return DefSubclassProc(hwnd, uMsg, wParam, lParam);
-					HWND widgetHnd = GetDlgItem(hwnd, id);
-					if (!widgetHnd) return DefSubclassProc(hwnd, uMsg, wParam, lParam);
+					if (!hwnd) return DefSubclassProc(hwnd, uMsg, wParam, lParam);
 
-					Widget* widget = (Widget*)GetWindowLongPtr(widgetHnd, GWLP_USERDATA);
+					Widget* widget = (Widget*)GetWindowLongPtr(hwnd, GWLP_USERDATA);
 					// TODO: Make this not hacky
 					Button* btn = dynamic_cast<Button*>(widget);
-					if (btn && btn->onPressed && id == btn->id()) {
+					if (btn && btn->onPressed) {
 						btn->onPressed();
 					}
 
@@ -1149,8 +1297,6 @@ namespace gui {
 
 		int border{ 4 }, spacing{ 4 };
 		Flow flow{ Flow::Horizontal };
-
-		std::vector<WID> children{};
 	};
 
 	class Manager {
@@ -1161,18 +1307,14 @@ namespace gui {
 		template <class W, typename... Args>
 		W& create(WID parent, Args&&... args) {
 			size_t id = m_genID++;
-			auto widget = std::make_unique<W>(std::forward<Args>(args)...);
-			widget->m_id = id;
+			m_widgets[id] = std::make_unique<W>(std::forward<Args>(args)...);
+			m_widgets[id]->m_id = id;
 
 			if (parent) {
-				Container* cont = dynamic_cast<Container*>(get(parent));
-				if (cont) {
-					cont->children.push_back(id);
-					widget->m_parent = parent;
-				}
+				get(parent)->m_children.push_back(id);
+				m_widgets[id]->m_parent = parent;
 			}
 
-			m_widgets[id] = std::move(widget);
 			return *((W*)m_widgets[id].get());
 		}
 
@@ -1226,9 +1368,9 @@ namespace gui {
 			Container* cont = dynamic_cast<Container*>(wid);
 			if (cont == nullptr) return;
 
-			if (cont->children.empty()) return;
+			if (cont->m_children.empty()) return;
 
-			for (auto& e : cont->children) {
+			for (auto& e : cont->m_children) {
 				totalProportions += get(e)->flex;
 			}
 			totalProportions = totalProportions <= 0 ? 1 : totalProportions;
@@ -1237,7 +1379,7 @@ namespace gui {
 			int& compSize = cont->flow == Flow::Horizontal ? parentBounds.width : parentBounds.height;
 			int& comp = cont->flow == Flow::Horizontal ? parentBounds.x : parentBounds.y;
 
-			for (auto& e : cont->children) {
+			for (auto& e : cont->m_children) {
 				Widget* c = get(e);
 				int size = cont->flow == Flow::Horizontal ? c->size.width : c->size.height;
 				if (c->flex == 0) {
@@ -1248,7 +1390,7 @@ namespace gui {
 
 			int pbx = parentBounds.x,
 				pby = parentBounds.y;
-			for (auto& e : cont->children) {
+			for (auto& e : cont->m_children) {
 				Widget* c = get(e);
 
 				Rect ret = Rect{ 0, 0, c->size.width, c->size.height };
@@ -1268,7 +1410,7 @@ namespace gui {
 						ret.height = parentBounds.height - cont->border * 2;
 						parentBounds.x += ret.width;
 						parentBounds.width -= ret.width;
-						if (e != cont->children.back()) ret.width -= cont->spacing;
+						if (e != cont->m_children.back()) ret.width -= cont->spacing;
 					} break;
 					case Flow::Vertical: {
 						const int sizeSlice = (size - (c->flex <= 0 ? ret.height : 0)) / totalProportions;
@@ -1278,7 +1420,7 @@ namespace gui {
 						ret.width = parentBounds.width - cont->border * 2;
 						parentBounds.y += ret.height;
 						parentBounds.height -= ret.height;
-						if (e != cont->children.back()) ret.height -= cont->spacing;
+						if (e != cont->m_children.back()) ret.height -= cont->spacing;
 					} break;
 				}
 
@@ -1642,7 +1784,7 @@ namespace gui {
 
 					for (WID id : man->widgets()) {
 						Widget* wid = man->get(id);
-						if (dynamic_cast<RichEdit*>(wid)) continue;
+						if (dynamic_cast<CodeEdit*>(wid)) continue;
 
 						SendMessage(wid->handle, WM_SETFONT, WPARAM(font), TRUE);
 					}
