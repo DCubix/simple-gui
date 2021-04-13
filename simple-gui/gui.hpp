@@ -36,7 +36,7 @@
 #include <locale.h>
 #include <cctype>
 #include <regex>
-#include <stack>
+#include <sstream>
 
 // thanks MaGetzUb
 #include "utils.hpp"
@@ -709,6 +709,197 @@ namespace gui {
 
 	};
 
+	constexpr int SplitterSize = 3;
+	class Splitter : public Widget {
+	public:
+		void create(Handle parent) {
+#ifdef _WIN32
+			Win32WindowParams eps = {};
+			eps.className = WC_STATIC;
+			eps.parent = parent;
+			eps.style = WS_CHILD | WS_VISIBLE | WS_BORDER | SS_NOTIFY;
+#endif
+			handle = Platform.createWindow(m_id, size, eps, (void*)this);
+#ifdef _WIN32
+			SetWindowSubclass(handle, Splitter::WndProc, 0, 0);
+#endif
+		}
+
+#ifdef _WIN32
+		static void gripH(HDC dc, int x, int y, int size) {
+			auto light = CreatePen(PS_SOLID, 1, RGB(250, 250, 250));
+			auto dark = CreatePen(PS_SOLID, 1, RGB(100, 100, 100));
+
+			auto old = SelectObject(dc, dark);
+			MoveToEx(dc, x - size, y, nullptr);
+			LineTo(dc, x + size, y);
+
+			SelectObject(dc, light);
+			MoveToEx(dc, x - size, y - 1, nullptr);
+			LineTo(dc, x + size, y - 1);
+
+			SelectObject(dc, old);
+
+			DeleteObject(light);
+			DeleteObject(dark);
+		}
+
+		static void gripV(HDC dc, int x, int y, int size) {
+			auto light = CreatePen(PS_SOLID, 1, COLOR_3DLIGHT);
+			auto dark = CreatePen(PS_SOLID, 1, COLOR_3DDKSHADOW);
+
+			auto old = SelectObject(dc, dark);
+			MoveToEx(dc, x, y - size, nullptr);
+			LineTo(dc, x, y + size);
+
+			SelectObject(dc, light);
+			MoveToEx(dc, x - 1, y - size, nullptr);
+			LineTo(dc, x - 1, y + size);
+
+			SelectObject(dc, old);
+
+			DeleteObject(light);
+			DeleteObject(dark);
+		}
+
+		static LRESULT CALLBACK WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam, UINT_PTR, DWORD_PTR) {
+			Splitter* spl = (Splitter*)GetWindowLongPtr(hwnd, GWLP_USERDATA);
+			switch (uMsg) {
+				case WM_ERASEBKGND: return 0;
+				case WM_PAINT: {
+					auto ab = spl->actualBounds();
+					PAINTSTRUCT ps = {};
+					ps.fErase = TRUE;
+
+					HDC dc = BeginPaint(hwnd, &ps);
+
+					RECT wr = { 0, 0, ab.width, ab.height };
+					FillRect(dc, &wr, GetSysColorBrush(COLOR_WINDOW));
+					
+					for (int i = -3; i < 4; i++) {
+						if (spl->flow == Flow::Horizontal) {
+							gripH(
+								dc,
+								spl->splitterPosition,
+								(spl->actualBounds().y + spl->actualBounds().height / 2) + i * 3,
+								SplitterSize
+							);
+						} else {
+							gripV(
+								dc,
+								(spl->actualBounds().x + spl->actualBounds().width / 2) + i * 3,
+								spl->actualBounds().height - spl->splitterPosition,
+								SplitterSize
+							);
+						}
+					}
+					EndPaint(hwnd, &ps);
+				} break;
+				case WM_LBUTTONDOWN: {
+					auto x = GET_X_LPARAM(lParam);
+					auto y = GET_Y_LPARAM(lParam);
+					POINT pt{ x, y };
+
+					auto ab = spl->actualBounds();
+
+					if (spl->flow == Flow::Horizontal) {
+						RECT rc = {
+							spl->splitterPosition - SplitterSize, 0,
+							spl->splitterPosition + SplitterSize, ab.height
+						};
+
+						if (PtInRect(&rc, pt)) {
+							spl->m_drag = true;
+							spl->m_prevPos = x;
+						}
+					} else {
+						RECT rc = {
+							0, ab.height - (spl->splitterPosition - SplitterSize),
+							ab.width, ab.height - (spl->splitterPosition + SplitterSize)
+						};
+
+						if (PtInRect(&rc, pt)) {
+							spl->m_drag = true;
+							spl->m_prevPos = y;
+						}
+					}
+				} break;
+				case WM_MOUSEMOVE: {
+					auto x = GET_X_LPARAM(lParam);
+					auto y = GET_Y_LPARAM(lParam);
+					POINT pt{ x, y };
+
+					auto ab = spl->actualBounds();
+
+					if (spl->flow == Flow::Horizontal) {
+						RECT rc = {
+							spl->splitterPosition - SplitterSize, 0,
+							spl->splitterPosition + SplitterSize, ab.height
+						};
+
+						if (PtInRect(&rc, pt)) {
+							SetCursor(LoadCursor(NULL, IDC_SIZEWE));
+						} else {
+							SetCursor(LoadCursor(NULL, IDC_ARROW));
+						}
+					} else {
+						RECT rc = {
+							0, ab.height - (spl->splitterPosition - SplitterSize),
+							ab.width, ab.height - (spl->splitterPosition + SplitterSize)
+						};
+
+						if (PtInRect(&rc, pt)) {
+							SetCursor(LoadCursor(NULL, IDC_SIZENS));
+						} else {
+							SetCursor(LoadCursor(NULL, IDC_ARROW));
+						}
+					}
+
+					if (spl->m_drag) {
+						if (spl->flow == Flow::Horizontal) {
+							int dx = x - spl->m_prevPos;
+							spl->splitterPosition += dx;
+							spl->splitterPosition = std::clamp(spl->splitterPosition, 0, ab.width - SplitterSize * 2);
+							spl->m_prevPos = x;
+
+							InvalidateRect(hwnd, nullptr, true);
+						} else {
+							int dy = y - spl->m_prevPos;
+							spl->splitterPosition += dy;
+							spl->splitterPosition = std::clamp(spl->splitterPosition, 0, ab.height - SplitterSize * 2);
+							spl->m_prevPos = y;
+
+							InvalidateRect(hwnd, nullptr, true);
+						}
+					}
+				} break;
+				case WM_LBUTTONUP: {
+					spl->m_drag = false;
+				} break;
+				case WM_NCDESTROY: RemoveWindowSubclass(hwnd, WndProc, 0); break;
+			}
+			return DefSubclassProc(hwnd, uMsg, wParam, lParam);
+		}
+#endif
+		void update() override {
+			Widget::update();
+
+			if (first) {
+				first->size.width = splitterPosition;
+				first->size.height = actualBounds().height;
+			}
+		}
+
+		Flow flow{ Flow::Horizontal };
+		int splitterPosition{ 200 };
+
+		Widget *first{ nullptr }, *second{ nullptr };
+
+	protected:
+		bool m_drag{ false };
+		int m_prevPos{ 0 };
+	};
+
 	enum class UnderlineStyle {
 		None = 0,
 		Solid,
@@ -790,6 +981,27 @@ namespace gui {
 #endif
 		}
 
+		static DWORD CALLBACK EditStreamCallback(
+			DWORD_PTR dwCookie,
+			LPBYTE lpBuff,
+			LONG cb,
+			PLONG pcb
+		) {
+			std::wstringstream* ntext = (std::wstringstream*) dwCookie;
+			*pcb = ntext->readsome((TCHAR*)lpBuff, cb);
+			return *pcb;
+		}
+
+		void rtf(const String& txt) {
+			std::wstringstream wss{ txt };
+
+			EDITSTREAM es = {};
+			es.dwError = 0;
+			es.pfnCallback = EditStreamCallback;
+			es.dwCookie = (DWORD_PTR)&wss;
+			SendMessage(handle, EM_STREAMIN, SF_RTF, (LPARAM)&es);
+		}
+
 #ifdef _WIN32
 		static LRESULT CALLBACK WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam, UINT_PTR, DWORD_PTR) {
 			//std::cout << GetWMName(uMsg) << std::endl;
@@ -823,14 +1035,14 @@ namespace gui {
 								gui::Widget* widget = (gui::Widget*)GetWindowLongPtr(hwnd, GWLP_USERDATA);
 								gui::CodeEdit* tb = static_cast<gui::CodeEdit*>(widget);
 
-								int em = SendMessage(tb->handle, EM_SETEVENTMASK, 0, 0);
-								SendMessage(tb->handle, WM_SETREDRAW, false, 0);
-								for (int i = 0; i < tb->lineCount(); i++) {
-									tb->highlight(i);
-								}
-								SendMessage(tb->handle, WM_SETREDRAW, true, 0);
-								InvalidateRect(tb->handle, nullptr, true);
-								SendMessage(tb->handle, EM_SETEVENTMASK, 0, em);
+								//int em = SendMessage(tb->handle, EM_SETEVENTMASK, 0, 0);
+								//SendMessage(tb->handle, WM_SETREDRAW, false, 0);
+								//for (int i = 0; i < tb->lineCount(); i++) {
+								//	tb->highlight(i);
+								//}
+								//SendMessage(tb->handle, WM_SETREDRAW, true, 0);
+								//InvalidateRect(tb->handle, nullptr, true);
+								//SendMessage(tb->handle, EM_SETEVENTMASK, 0, em);
 							} break;
 						}
 					}
@@ -841,13 +1053,7 @@ namespace gui {
 		}
 #endif
 
-		void highlight(int line = -1) {
-			for (auto& hr : highlightingRules) {
-				highlightStyle(line, hr.pattern, hr.style);
-			}
-		}
-
-		void highlightStyle(int line, const String& regex, RichStyle style) {
+		void highlight(int line) {
 			if (line >= lineCount()) return;
 
 			line = line < 0 ? currentLineIndex() : line;
@@ -864,7 +1070,6 @@ namespace gui {
 			text.resize(sz);
 
 			Edit_GetLine(handle, line, text.data(), sz);
-			
 #endif
 			if (offset == -1) return;
 
@@ -872,14 +1077,16 @@ namespace gui {
 			select(offset, text.size());
 			resetFormat();
 
-			std::wregex re(regex);
-			std::wsmatch sm;
-			bool matched = false;
-			while (std::regex_search(text, sm, re)) {
-				select(sm.position(0) + offset, sm[0].length());
-				formatSelection(style);
-				offset += sm[0].length();
-				text = sm.suffix().str();
+			for (auto& hr : highlightingRules) {
+				std::wregex re(hr.pattern);
+				std::wsmatch sm;
+
+				while (std::regex_search(text, sm, re)) {
+					select(sm.position(0) + offset, sm[0].length());
+					formatSelection(hr.style);
+					offset += sm[0].length();
+					text = sm.suffix().str();
+				}
 			}
 
 			select(std::get<0>(sel), 0);

@@ -165,19 +165,6 @@ public:
 	}
 };
 
-static std::unordered_map<gui::String, gui::Color> luaMap = {
-	{ L"if", gui::Color{ 0, 50, 230, 255 } },
-	{ L"then", gui::Color{ 0, 50, 230, 255 } },
-	{ L"else", gui::Color{ 0, 50, 230, 255 } },
-	{ L"end", gui::Color{ 0, 50, 230, 255 } },
-	{ L"elseif", gui::Color{ 0, 50, 230, 255 } },
-	{ L"function", gui::Color{ 0, 50, 230, 255 } },
-	{ L"local", gui::Color{ 0, 50, 230, 255 } },
-	{ L"do", gui::Color{ 0, 50, 230, 255 } },
-	{ L"while", gui::Color{ 0, 50, 230, 255 } },
-	{ L"return", gui::Color{ 0, 50, 230, 255 } }
-};
-
 class RichEditTest : public gui::Window {
 public:
 	void onCreate(gui::Manager& man) override {
@@ -188,15 +175,35 @@ public:
 		red.background = gui::Color{ 40, 40, 40, 255 };
 		red.foreground = gui::Color{ 240, 240, 240, 255 };
 
-		gui::HighlightingRule kwRule = {
+		gui::HighlightingRule kw1Rule = {
 			.style = {
 				.background = red.background,
 				.foreground = gui::Color{ 20, 177, 217, 255 },
 				.bold = true
 			},
-			.pattern = L"\".*\""
+			.pattern = L"\\b(if|else|elif|pass|not|or|and|in|for|while|with|as|try|except|finally|yield|return)\\b"
 		};
-		red.highlightingRules.push_back(kwRule);
+		red.highlightingRules.push_back(kw1Rule);
+
+		gui::HighlightingRule kw2Rule = {
+			.style = {
+				.background = red.background,
+				.foreground = gui::Color{ 217, 177, 20, 255 },
+				.bold = true
+			},
+			.pattern = L"\\b(class|def|self)\\b"
+		};
+		red.highlightingRules.push_back(kw2Rule);
+
+		gui::HighlightingRule kw3Rule = {
+			.style = {
+				.background = red.background,
+				.foreground = gui::Color{ 20, 217, 177, 255 },
+				.bold = true
+			},
+			.pattern = L"\\b(True|False|None)\\b"
+		};
+		red.highlightingRules.push_back(kw3Rule);
 
 		gui::Container& cnt = man.create<gui::Container>(root().id(), gui::Size{ 0, 32 });
 		cnt.flex = 0;
@@ -206,7 +213,24 @@ public:
 		btn.size.height = 32;
 		btn.flex = 0;
 
+		btn.onPressed = [&]() {
+			red.rtf(LR"({\rtf1\ansi{\fonttbl\f0\fswiss Helvetica;}\f0\pard
+			This is some{ \b bold } text.\par
+	})");
+		};
+
 		resize(400, 400);
+	}
+};
+
+class SplitterTest : public gui::Window {
+public:
+	void onCreate(gui::Manager& man) override {
+		root().flow = gui::Flow::Vertical;
+
+		gui::Splitter& spl = man.create<gui::Splitter>(root().id());
+
+		resize(800, 600);
 	}
 };
 
@@ -220,9 +244,10 @@ int main(int argc, char** argv) {
 	RichEditTest win{};
 	win.show();
 
+	//SplitterTest st{};
+	//st.show();
+
 	gui::Window::mainLoop();
 
-	//std::wregex re(L"\\b(class|public|void|override|char|int|float|double|if|else|while|do|for|auto|true|false|bool)\\b");
-	
 	return 0;
 }
